@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+# Phase 3 vector memory. Optional: without it an in-memory store is used.
+# First use downloads an ~80 MB embedding model to ~/.cache/chroma.
+chromadb>=1.0
+# Optional: lets engine/build.ps1 compile the C++ engine without a system compiler.
+ziglang>=0.13

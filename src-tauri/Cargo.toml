@@ -1,0 +1,17 @@
+[package]
+name = "genesis"
+version = "0.1.0"
+description = "Project Genesis - emergent LLM society simulation"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

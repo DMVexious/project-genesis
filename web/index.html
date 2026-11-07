@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Genesis</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <section id="stage">
+      <div id="game"></div>
+      <div id="overlay" aria-hidden="true"></div>
+      <div id="banner" hidden></div>
+    </section>
+
+    <aside id="panel">
+      <header>
+        <h1>Project Genesis</h1>
+        <div id="conn" class="pill">connecting…</div>
+      </header>
+
+      <div id="stats" class="stats"></div>
+
+      <div class="controls">
+        <button id="btn-pause" title="Pause / resume (space)">⏸</button>
+        <button id="btn-step" title="Advance one tick">⏭</button>
+        <label>Speed <input id="speed" type="range" min="50" max="1000" step="25"></label>
+        <span id="speed-val"></span>
+      </div>
+      <div class="controls">
+        <label>Seed <input id="seed" type="number" min="0"></label>
+        <button id="btn-reset">New world</button>
+      </div>
+
+      <div class="hint">Drag to pan · scroll to zoom · WASD / arrows · click an NPC to follow it</div>
+      <div class="hint">🏠 hut (home) · 🌾 farm · 🔥 campfire · 🪦 grave · ring colour under feet = temperament</div>
+
+      <h2>Population</h2>
+      <ul id="npc-list"></ul>
+
+      <div id="detail" hidden></div>
+
+      <h2>Chronicle</h2>
+      <ol id="log"></ol>
+    </aside>
+  </main>
+
+  <script src="vendor/phaser.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

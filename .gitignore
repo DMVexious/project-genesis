@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+engine/build/
+chroma_data/
+node_modules/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
+orchestrator/build/
+orchestrator/dist/
