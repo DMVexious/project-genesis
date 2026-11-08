@@ -65,11 +65,12 @@ class ChromaMemory:
         self._query_vec = None  # the recall query never changes, so embed it once
         self._n = 0       # ids handed out (unique per process)
         self._stored = 0  # documents in the collection
-        # flush() and recall() run in worker threads (the sim keeps embedding off
-        # the event loop); serialise them so ids and counts stay consistent.
+        # flush() runs in a worker thread (embedding is slow); the lock keeps ids
+        # and counts consistent with reset(). recall() never waits for it.
         self._lock = threading.RLock()
         self._grudges: dict[tuple[int, int], int] = {}
         self._pending: list[Memory] = []
+        self._embedding: list[Memory] = []  # the batch flush() is embedding right now
 
     def log(self, m: Memory):
         # Buffered: embedding one document per call is slow, so the sim calls
@@ -83,6 +84,7 @@ class ChromaMemory:
             if not self._pending:
                 return
             batch, self._pending = self._pending, []
+            self._embedding = batch
             ids = []
             for m in batch:
                 self._n += 1
@@ -94,22 +96,24 @@ class ChromaMemory:
                             "kind": m.kind, "valence": m.valence} for m in batch],
             )
             self._stored += len(batch)
+            self._embedding = []
 
     def recall(self, owner: int, other: int, k: int = 3) -> list[Memory]:
+        # Memories not embedded yet are matched directly instead of waiting for
+        # flush(): under load the embedding backlog could take seconds.
+        recent = [m for m in self._embedding + self._pending if m.owner == owner and m.other == other]
+        stored: list[Memory] = []
         where = {"$and": [{"owner": owner}, {"other": other}]}
-        with self._lock:
-            self.flush()
-            try:
-                if self._query_vec is None:
-                    self._query_vec = self._ef(["fight attack trade child friend"])[0]
-                res = self._col.query(query_embeddings=[self._query_vec], n_results=k, where=where)
-                docs, metas = res["documents"][0], res["metadatas"][0]
-            except Exception as e:  # no matching memories, or embedding backend unavailable
-                log.debug("chroma query failed: %s", e)
-                return []
-        out = [Memory(md["owner"], md["other"], md["tick"], md["kind"], d, md["valence"])
-               for d, md in zip(docs, metas)]
-        return sorted(out, key=lambda m: m.tick)
+        try:
+            if self._query_vec is None:
+                self._query_vec = self._ef(["fight attack trade child friend"])[0]
+            res = self._col.query(query_embeddings=[self._query_vec], n_results=k, where=where)
+            stored = [Memory(md["owner"], md["other"], md["tick"], md["kind"], d, md["valence"])
+                      for d, md in zip(res["documents"][0], res["metadatas"][0])]
+        except Exception as e:  # no matching memories, or embedding backend unavailable
+            log.debug("chroma query failed: %s", e)
+        unique = {(m.tick, m.kind, m.text): m for m in stored + recent}  # a batch may land mid-call
+        return sorted(unique.values(), key=lambda m: m.tick)[-k:]
 
     def grudge(self, owner: int, other: int) -> int:
         return self._grudges.get((owner, other), 0)
@@ -120,6 +124,7 @@ class ChromaMemory:
     def reset(self):
         with self._lock:
             self._pending = []
+            self._embedding = []
             self._client.delete_collection(self._collection_name)
             self._col = self._client.get_or_create_collection(self._collection_name, embedding_function=self._ef)
             self._grudges.clear()

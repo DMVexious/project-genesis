@@ -19,11 +19,11 @@ import random
 import re
 from dataclasses import dataclass, field
 
-from .traits import TRAIT_HINTS, Genome
+from .traits import BELIEFS, TRAIT_HINTS, Genome, belief_text, voice_text
 
 log = logging.getLogger(__name__)
 
-MAX_WORDS = 10
+MAX_WORDS = 14
 
 
 @dataclass
@@ -38,6 +38,7 @@ class NpcView:
     nearby: dict = field(default_factory=dict)  # {"hut": n, "farm": n, "fire": n} within 5 tiles
     home: int | None = None  # walking-ish distance to the hut this NPC built, None = homeless
     elder: bool = False
+    persona: dict = field(default_factory=dict)  # {"belief": i, "voice": j}, see traits.BELIEFS/VOICES
 
 
 @dataclass
@@ -47,6 +48,7 @@ class Interaction:
     options: list[str]
     memories: list[str]
     grudge: int
+    news: list[str] = field(default_factory=list)  # recent village events, newest last
 
 
 # --- Prompt assembly ---------------------------------------------------------
@@ -115,26 +117,74 @@ def action_prompt(v: NpcView, names: dict[int, str]) -> list[dict]:
     ]
 
 
-def interaction_prompt(ix: Interaction) -> list[dict]:
-    mood = "neutral"
+BANNED = ("hello", "hi there", "greetings", "how are you", "nice to meet", "good day", "my friend",
+          "work together", "we must survive", "the land is hard")
+
+
+def tone_examples(v: NpcView, k: int = 3) -> list[str]:
+    """Sample lines from *other* beliefs: they show the register without
+    handing the model its own catchphrase to parrot."""
+    own = v.persona.get("belief", -1)
+    pool = [line for i, (_, line) in enumerate(BELIEFS) if i != own]
+    return random.Random(v.id * 7919 + v.stats.get("age", 0)).sample(pool, k)
+
+
+def dialogue_system_prompt(v: NpcView) -> str:
+    hints = "; ".join(TRAIT_HINTS[t] for t in v.genome.traits())
+    persona = f" You {belief_text(v.persona)}, and you {voice_text(v.persona)}." if v.persona else ""
+    stage = "an elder" if v.elder else ("a child" if v.stats.get("age", 99) < 60 else "an adult")
+    return (f"You are {v.name}, {stage} in a tiny, strange stone-age village where people are born, "
+            f"feud, love and die.{persona} Temperament: {hints}.\n"
+            "You are an odd, vivid character, not a polite assistant. Never greet, never ask how someone is, "
+            "never talk about 'surviving' or 'working together'. Every line must be specific: mention your "
+            "belief, a memory, something that happened, their name, their body, food, wood, the dead. "
+            "Weird, funny, dark, petty or tender are all fine. "
+            "Lines in the right spirit (from other villagers, do not copy): "
+            + " / ".join(f'"{x}"' for x in tone_examples(v)))
+
+
+def _situation(ix: Interaction) -> dict:
+    mood = "no strong feelings"
     if ix.grudge <= -2:
-        mood = "you hold a grudge against them"
+        mood = "you hate them"
     elif ix.grudge >= 2:
-        mood = "you consider them an ally"
-    payload = {
-        "you": {"health": ix.me.stats["health"], "social_urge": ix.me.stats["social"],
-                "spear": bool(ix.me.stats["spear"])},
-        "them": {"name": ix.other.name, "health": ix.other.stats["health"],
-                 "spear": bool(ix.other.stats["spear"])},
-        "memories_of_them": ix.memories or ["You have never met."],
+        mood = "you are fond of them"
+    them = {"name": ix.other.name, "health": ix.other.stats["health"],
+            "has_spear": bool(ix.other.stats["spear"]), "age": ix.other.stats["age"]}
+    if ix.other.persona:
+        them["rumour_about_them"] = f"they {belief_text(ix.other.persona)}"
+    return {
+        "you": {"health": ix.me.stats["health"], "fullness": ix.me.stats["hunger"],
+                "food": ix.me.stats["food"], "wood": ix.me.stats["wood"]},
+        "them": them,
+        "your_memories_of_them": ix.memories or ["You have never spoken."],
+        "village_news": ix.news[-3:] or ["Nothing has happened yet."],
         "feeling": mood,
-        "options": ix.options,
     }
+
+
+def interaction_prompt(ix: Interaction) -> list[dict]:
+    payload = {**_situation(ix), "options": ix.options}
     return [
-        {"role": "system", "content": system_prompt(ix.me)},
+        {"role": "system", "content": dialogue_system_prompt(ix.me)},
         {"role": "user", "content": json.dumps(payload) +
-         f"\nPick one option and say one short sentence to {ix.other.name} (under {MAX_WORDS} words). "
-         "Format: option | line"},
+         f"\nPick one option and say one line to {ix.other.name} in your own voice "
+         f"(under {MAX_WORDS} words). Format: option | line"},
+    ]
+
+
+def reply_prompt(ix: Interaction, heard: str, option: str) -> list[dict]:
+    """``ix.me`` is the one answering; ``ix.other`` just spoke to them."""
+    payload = {**_situation(ix), "they_said": heard,
+               "they_want": {"talk": "to talk", "fight": "to fight you", "trade": "to trade",
+                             "mate": "to start a family with you",
+                             "refused_trade": "to trade, and you refused",
+                             "refused_mate": "to start a family with you, and you said no"}.get(option, option)}
+    return [
+        {"role": "system", "content": dialogue_system_prompt(ix.me)},
+        {"role": "user", "content": json.dumps(payload) +
+         f"\nAnswer {ix.other.name} with one line in your own voice (under {MAX_WORDS} words). "
+         "React to what they actually said."},
     ]
 
 
@@ -168,6 +218,26 @@ def interaction_grammar(options: list[str]) -> str:
 
 
 CONSENT_GRAMMAR = 'root ::= "yes" | "no"\n'
+REPLY_GRAMMAR = (f"root ::= word (\" \" word){{0,{MAX_WORDS - 1}}}\n"
+                 "word ::= [A-Za-z',.!?-]{1,16}\n")
+
+
+def _trigrams(text: str) -> set[tuple[str, ...]]:
+    w = re.findall(r"[a-z']+", text.lower())
+    return {tuple(w[i:i + 3]) for i in range(len(w) - 2)}
+
+
+_EXAMPLE_TRIGRAMS = [_trigrams(line) for _, line in BELIEFS]
+
+
+def is_generic(line: str, own_belief: int = -1) -> bool:
+    """Bland small talk, or a line parroted from the tone examples (small
+    models copy them); either earns a re-roll. An NPC may quote its own belief."""
+    low = line.lower()
+    if any(b in low for b in BANNED):
+        return True
+    tri = _trigrams(line)
+    return any(tri & ex for i, ex in enumerate(_EXAMPLE_TRIGRAMS) if i != own_belief)
 
 
 def clamp_words(text: str, n: int = MAX_WORDS) -> str:
@@ -294,8 +364,21 @@ class HeuristicBrain:
             weights["fight"] = -100
         scored = {o: weights[o] + self.rng.random() * 15 for o in ix.options}
         option = max(scored, key=scored.get)
+        if option == "talk" and ix.me.persona and self.rng.random() < 0.6:
+            return option, BELIEFS[ix.me.persona["belief"]][1]
         pool = LINES[option].get(g.aggression) or LINES[option]["*"]
         return option, self.rng.choice(pool)
+
+    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+        if option.startswith("refused_"):
+            return self.rng.choice(["No." if option == "refused_trade" else "Not with you.",
+                                    "I would rather hug a tree.", "Ask me when the sky falls."])
+        if ix.me.persona and self.rng.random() < 0.5:
+            return BELIEFS[ix.me.persona["belief"]][1]
+        if ix.grudge <= -2 or option == "fight":
+            return self.rng.choice(["Not you again.", "Go chew a rock.", "I remember what you did."])
+        return self.rng.choice(["Hm. Strange thing to say.", "You've been eating the wrong berries.",
+                                "Say that again, slower.", "...why are you telling me this?"])
 
     async def consent(self, ix: Interaction, proposal: str, line: str) -> bool:
         g = ix.me.genome
@@ -321,12 +404,13 @@ class LlamaBrain:
     name = "llm"
 
     def __init__(self, url: str, fallback: HeuristicBrain, timeout: float = 30.0,
-                 temperature: float = 0.7, concurrency: int = 8):
+                 temperature: float = 0.7, concurrency: int = 8, talk_temperature: float = 1.05):
         import httpx
 
         self.url = url.rstrip("/")
         self.fallback = fallback
         self.temperature = temperature
+        self.talk_temperature = talk_temperature  # speech runs hotter than decisions
         self._client = httpx.AsyncClient(timeout=timeout)
         self._sem = asyncio.Semaphore(concurrency)
         self.failures = 0
@@ -339,14 +423,17 @@ class LlamaBrain:
         except Exception:
             return False
 
-    async def _complete(self, messages: list[dict], grammar: str, max_tokens: int) -> str:
+    async def _complete(self, messages: list[dict], grammar: str, max_tokens: int,
+                        temperature: float | None = None) -> str:
+        talk = temperature is not None
         async with self._sem:
             self.calls += 1
             r = await self._client.post(f"{self.url}/v1/chat/completions", json={
                 "messages": messages,
                 "grammar": grammar,
                 "max_tokens": max_tokens,
-                "temperature": self.temperature,
+                "temperature": self.temperature if temperature is None else temperature,
+                **({"repeat_penalty": 1.2, "presence_penalty": 0.6, "min_p": 0.05} if talk else {}),
                 "cache_prompt": True,
             })
             r.raise_for_status()
@@ -370,15 +457,30 @@ class LlamaBrain:
 
     async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
         try:
-            out = await self._complete(interaction_prompt(ix), interaction_grammar(ix.options), 40)
-            option, _, line = out.partition("|")
-            option = option.strip()
-            if option not in ix.options:
-                raise ValueError(f"bad option {option!r}")
+            for _ in range(2):  # one retry if the line comes out bland
+                out = await self._complete(interaction_prompt(ix), interaction_grammar(ix.options), 48,
+                                           self.talk_temperature)
+                option, _, line = out.partition("|")
+                option = option.strip()
+                if option not in ix.options:
+                    raise ValueError(f"bad option {option!r}")
+                if not is_generic(line, ix.me.persona.get("belief", -1)):
+                    break
             return option, clamp_words(line.strip()) or "..."
         except Exception as e:
             self._failed("interaction", e)
             return await self.fallback.choose_interaction(ix)
+
+    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+        try:
+            for _ in range(2):
+                out = await self._complete(reply_prompt(ix, heard, option), REPLY_GRAMMAR, 40, self.talk_temperature)
+                if not is_generic(out, ix.me.persona.get("belief", -1)):
+                    break
+            return clamp_words(out.strip()) or "..."
+        except Exception as e:
+            self._failed("reply", e)
+            return await self.fallback.reply(ix, heard, option)
 
     async def consent(self, ix: Interaction, proposal: str, line: str) -> bool:
         try:
@@ -401,8 +503,8 @@ class OllamaBrain(LlamaBrain):
     name = "ollama"
 
     def __init__(self, url: str, model: str, fallback: HeuristicBrain, timeout: float = 90.0,
-                 temperature: float = 0.7, concurrency: int = 4):
-        super().__init__(url, fallback, timeout, temperature, concurrency)
+                 temperature: float = 0.7, concurrency: int = 4, talk_temperature: float = 1.05):
+        super().__init__(url, fallback, timeout, temperature, concurrency, talk_temperature)
         self.model = model
         self.name = f"ollama:{model}"
 
@@ -450,7 +552,11 @@ class OllamaBrain(LlamaBrain):
         r.raise_for_status()
         log.info("%s ready", self.model)
 
-    async def _chat(self, messages: list[dict], schema: dict, max_tokens: int) -> dict:
+    async def _chat(self, messages: list[dict], schema: dict, max_tokens: int,
+                    temperature: float | None = None) -> dict:
+        opts = {"temperature": self.temperature if temperature is None else temperature, "num_predict": max_tokens}
+        if temperature is not None:
+            opts.update(repeat_penalty=1.2, presence_penalty=0.6, min_p=0.05)
         async with self._sem:
             self.calls += 1
             r = await self._client.post(f"{self.url}/api/chat", json={
@@ -460,7 +566,7 @@ class OllamaBrain(LlamaBrain):
                 "stream": False,
                 "think": False,
                 "keep_alive": "30m",
-                "options": {"temperature": self.temperature, "num_predict": max_tokens},
+                "options": opts,
             })
             r.raise_for_status()
             return json.loads(r.json()["message"]["content"])
@@ -482,13 +588,28 @@ class OllamaBrain(LlamaBrain):
                   "properties": {"option": {"type": "string", "enum": ix.options},
                                  "line": {"type": "string"}}}
         try:
-            out = await self._chat(interaction_prompt(ix), schema, 48)
-            if out["option"] not in ix.options:
-                raise ValueError(f"bad option {out['option']!r}")
+            for _ in range(2):  # one retry if the line comes out bland
+                out = await self._chat(interaction_prompt(ix), schema, 64, self.talk_temperature)
+                if out["option"] not in ix.options:
+                    raise ValueError(f"bad option {out['option']!r}")
+                if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
+                    break
             return out["option"], clamp_words(str(out["line"]).strip()) or "..."
         except Exception as e:
             self._failed("interaction", e)
             return await self.fallback.choose_interaction(ix)
+
+    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+        schema = {"type": "object", "required": ["line"], "properties": {"line": {"type": "string"}}}
+        try:
+            for _ in range(2):
+                out = await self._chat(reply_prompt(ix, heard, option), schema, 56, self.talk_temperature)
+                if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
+                    break
+            return clamp_words(str(out["line"]).strip()) or "..."
+        except Exception as e:
+            self._failed("reply", e)
+            return await self.fallback.reply(ix, heard, option)
 
     async def consent(self, ix: Interaction, proposal: str, line: str) -> bool:
         schema = {"type": "object", "required": ["agree"], "properties": {"agree": {"type": "boolean"}}}

@@ -6,13 +6,14 @@ import re
 import unittest
 from collections import Counter
 
-from genesis.brain import (HeuristicBrain, Interaction, LlamaBrain, NpcView, action_grammar,
-                           action_prompt, clamp_words, interaction_grammar)
+from genesis.brain import (MAX_WORDS, HeuristicBrain, Interaction, LlamaBrain, NpcView, action_grammar,
+                           action_prompt, clamp_words, interaction_grammar, interaction_prompt, is_generic,
+                           reply_prompt)
 from genesis.engine_client import BinaryEngine, PyEngine, find_engine_binary
 from genesis.engine_py import Rng
 from genesis.memory import Memory, SimpleMemory
 from genesis.sim import SimConfig, Simulation
-from genesis.traits import POOLS, Genome, random_genome, splice
+from genesis.traits import BELIEFS, POOLS, VOICES, Genome, random_genome, splice
 
 
 def scripted_choices(state, rng):
@@ -176,10 +177,10 @@ class BrainTests(unittest.TestCase):
         self.assertEqual(action_grammar(3), 'root ::= "0" | "1" | "2"\n')
         g = interaction_grammar(["talk", "fight"])
         self.assertIn('opt ::= "talk" | "fight"', g)
-        self.assertIn("{0,9}", g)  # at most 10 words
+        self.assertIn("{0,13}", g)  # at most 14 words
 
     def test_clamp_words(self):
-        self.assertEqual(len(clamp_words(" ".join(["w"] * 25)).split()), 10)
+        self.assertEqual(len(clamp_words(" ".join(["w"] * 25)).split()), 14)
 
     def test_prompt_lists_only_engine_actions(self):
         s = PyEngine().init(2, 16, 12, 3)
@@ -204,8 +205,26 @@ class BrainTests(unittest.TestCase):
         idx, opt, line, failures = asyncio.run(go())
         self.assertGreaterEqual(idx, 0)
         self.assertIn(opt, ("talk", "fight"))
-        self.assertLessEqual(len(line.split()), 10)
+        self.assertLessEqual(len(line.split()), MAX_WORDS)
         self.assertEqual(failures, 2)
+
+    def test_dialogue_prompt_carries_persona_and_news(self):
+        s = PyEngine().init(2, 16, 12, 2)
+        a, b = s["npcs"][:2]
+        me = NpcView(a["id"], "Ash", Genome("Neutral", "Lazy", "Loner"), a, [], persona={"belief": 3, "voice": 1})
+        them = NpcView(b["id"], "Bo", Genome("Pacifist", "Lazy", "Loner"), b, [], persona={"belief": 5, "voice": 2})
+        ix = Interaction(me, them, ["talk"], [], 0, ["Kora died of starvation"])
+        sys_msg, user = (m["content"] for m in interaction_prompt(ix))
+        self.assertIn(BELIEFS[3][0], sys_msg)
+        self.assertIn(VOICES[1], sys_msg)
+        self.assertNotIn(f'"{BELIEFS[3][1]}"', sys_msg)  # never shown its own catchphrase
+        self.assertIn("Kora died", user)
+        self.assertIn(BELIEFS[5][0], user)  # gossip about the listener
+        self.assertIn("they_said", reply_prompt(ix, "Your shadow left.", "talk")[1]["content"])
+        self.assertTrue(is_generic("Hello there, how are you?"))
+        self.assertTrue(is_generic("Grumm says you smell bad."))  # parrots a tone example
+        self.assertFalse(is_generic("Grumm says you smell bad.", own_belief=3))  # its own belief is fine
+        self.assertFalse(is_generic("Your knees look delicious, Bo."))
 
 
 class SimTests(unittest.TestCase):
@@ -219,7 +238,7 @@ class SimTests(unittest.TestCase):
         self.assertGreater(sim.memory.count(), 0)
         for f in frames:
             for d in f["dialogue"]:
-                self.assertLessEqual(len(d["text"].split()), 10)
+                self.assertLessEqual(len(d["text"].split()), MAX_WORDS)
             for n in f["npcs"]:
                 self.assertIn(n["id"], sim.meta)
         births = [m for m in sim.meta.values() if m.parents]
@@ -228,6 +247,25 @@ class SimTests(unittest.TestCase):
             for slot in POOLS:
                 if slot not in child.mutated:
                     self.assertIn(getattr(child.genome, slot), (getattr(pa, slot), getattr(pb, slot)))
+
+    def test_conversations_get_replies_and_spread_beliefs(self):
+        async def go():
+            sim = Simulation(PyEngine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, convert_chance=1.0))
+            frames = [await sim.tick() for _ in range(300)]
+            return sim, frames
+        sim, frames = asyncio.run(go())
+        said = [d for f in frames for d in f["dialogue"]]
+        talks = [d for d in said if d["kind"] == "talk"]
+        self.assertGreater(len(talks), 0)
+        # every opening talk line is answered by its listener in the same frame
+        for f in frames:
+            for d in f["dialogue"]:
+                if d["kind"] == "talk" and d["npc"] != d["target"]:
+                    self.assertTrue(any(r["npc"] == d["target"] and r["target"] == d["npc"]
+                                        for r in f["dialogue"]))
+        self.assertTrue(any("🌀" in line for f in frames for line in f["log"]))
+        self.assertTrue(all(n["belief"] and n["voice"] for n in frames[-1]["npcs"]))
+        self.assertGreater(len(sim.news), 0)
 
     def test_hybrid_routing(self):
         class FakeLLM:

@@ -1,4 +1,44 @@
-# Project Genesis
+<p align="center">
+  <img src="docs/media/logo.svg" alt="Project Genesis" width="100%">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white" alt="C++17">
+  <img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Phaser-3.90-8E44AD" alt="Phaser">
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri">
+  <img src="https://img.shields.io/badge/Ollama-bonsai--2%3A2b-000000?logo=ollama&logoColor=white" alt="Ollama">
+  <img src="https://img.shields.io/badge/llama.cpp-GBNF-6E4C13" alt="llama.cpp GBNF">
+  <img src="https://img.shields.io/badge/ChromaDB-RAG%20memory-FF6446" alt="ChromaDB">
+  <img src="https://img.shields.io/badge/Windows-installer-0078D6?logo=windows&logoColor=white" alt="Windows">
+</p>
+
+<p align="center">
+  <b>A village of LLM-driven NPCs that forage, build, trade, fight, fall in love, grow old and die.</b><br>
+  A deterministic C++ engine owns the world; a small local LLM only ever picks from the engine's list of valid moves.
+</p>
+
+<p align="center">
+  <img src="docs/media/hero.gif" alt="Project Genesis running live" width="860">
+</p>
+
+<p align="center">
+  ▶️ <a href="docs/media/demo.mp4"><b>Watch the 30-second demo video (MP4)</b></a> &nbsp;·&nbsp;
+  🚀 <a href="#quick-start-windows--powershell"><b>Quick start</b></a> &nbsp;·&nbsp;
+  📜 <a href="#game-rules-tunable-constants-at-the-top-of-both-engine-files"><b>Game rules</b></a>
+</p>
+
+## Gallery
+
+| A growing village | Conversations | Generations |
+| :---: | :---: | :---: |
+| <img src="docs/media/village.gif" alt="Huts, farms and campfires" width="270"> | <img src="docs/media/talk.gif" alt="NPCs talking and trading" width="270"> | <img src="docs/media/life.gif" alt="Following one villager" width="270"> |
+| Huts become homes, farms ripen, campfires flicker. Every building is an NPC's own choice | Speech bubbles come straight from the LLM, shaped by remembered grudges and friendships | Children inherit traits and looks, elders turn grey, and graves mark the dead |
+
+All clips are the simulation running live with `bonsai-2:2b` on Ollama: no scripted events.
+
+## What it is
 
 An emergent 2D society sim: autonomous NPCs survive, build, fight and reproduce on
 a barren grid. A deterministic C++ engine owns the physics; a local LLM only ever
@@ -8,7 +48,7 @@ picks from the engine's numbered list of valid actions.
  web/ (Phaser + DOM overlays) ──WebSocket──▶ orchestrator/ (FastAPI, Python)
                                                │  ├─ brain.py   → llama-server (GBNF-constrained)
                                                │  ├─ memory.py  → ChromaDB (RAG grudges/alliances)
-                                               │  └─ traits.py  → genetics + copopulation
+                                               │  └─ traits.py  → genetics, looks, personas
                                                └─ stdin/stdout ─▶ engine/ (C++: grid, BFS pathing,
                                                                    stats, combat, placement)
 ```
@@ -18,7 +58,7 @@ picks from the engine's numbered list of valid actions.
 | Phase | State |
 |---|---|
 | 1 Terminal prototype | ✅ C++ engine, Python orchestrator, ASCII terminal view, prompt/grammar inspector |
-| 2 Local web UI | ✅ Phaser world, procedural pixel art, emojis, 10-word speech bubbles that fade 4 ticks later |
+| 2 Local web UI | ✅ Phaser world, procedural pixel art, emojis, 14-word speech bubbles (with replies) that fade 4 ticks later |
 | 3 RAG & genetics | ✅ ChromaDB memories feed interaction prompts; 50/50 trait splicing with 5% mutation |
 | 4 Tauri packaging | ✅ Tauri v2 shell + orchestrator/engine sidecars → NSIS installer |
 
@@ -75,10 +115,27 @@ Measured with bonsai-2:2b on an RTX 5060 over 40 ticks: 10 NPCs ~1 s/tick (from 
 `auto` prefers it when `/health` answers. These requests use GBNF grammars:
 
 * action choice: `root ::= "0" | "1" | …`, meaning only indices the engine offered;
-* interaction: `<option> | <1–10 words>`;
+* interaction: `<option> | <1–14 words>`;
+* reply (the listener always answers): `<1–14 words>`;
 * consent (trade/mate): `yes | no`.
 Any failed or timed-out call falls back to the heuristic for that NPC, so a slow
 model never stalls the tick loop.
+
+## Personas and conversations
+
+Every NPC is born with one strange belief ("keeps a rock named Grumm and asks it for advice")
+and one way of talking ("speaks only in riddles"); both show in the NPC panel.
+
+* **Inherited:** a child takes each from a random parent, with a 25% chance of a fresh one.
+* **Contagious:** each conversation has an 8% chance (`convert_chance`) to convert the listener
+  to the speaker's belief. Charismatic speakers convert twice as often, Paranoid listeners resist
+  (×0.25), and nobody is converted by someone they hold a grudge against. Cults and feuding
+  folklores form on their own; conversions show in the log as 🌀.
+* **Two-sided:** the listener always replies, including when refusing a trade or mate, and both
+  sides remember the exchange.
+* **No small talk:** prompts carry the persona, memories and recent village news; lines that are
+  generic ("hello", "how are you", "we must survive") or copied from the tone examples get
+  re-rolled once. Speech runs at a higher temperature than decisions, with repeat penalties.
 
 ## Time, pacing and the camera
 

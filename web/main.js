@@ -48,6 +48,7 @@
 
   const $ = (id) => document.getElementById(id);
   const overlay = $("overlay");
+  if (params.has("bare")) $("panel").hidden = true;  // ?bare=1: world only (screenshots, recordings)
 
   const state = {
     frame: null,
@@ -382,7 +383,10 @@
       const cam = sc.cameras.main;
       cam.setBounds(0, 0, f.width * TILE, f.height * TILE);
       const alive = f.npcs.filter((n) => n.alive);
-      if (alive.length) {
+      const center = (params.get("center") || "").split(",").map(Number);  // ?center=<tileX>,<tileY>
+      if (center.length === 2 && center.every(Number.isFinite)) {
+        cam.centerOn(center[0] * TILE, center[1] * TILE);
+      } else if (alive.length) {
         const cx = alive.reduce((a, n) => a + n.x, 0) / alive.length;
         const cy = alive.reduce((a, n) => a + n.y, 0) / alive.length;
         cam.centerOn(cx * TILE, cy * TILE);
@@ -616,6 +620,7 @@
         </div>
         <div class="traits">${Object.entries(t).map(([slot, v]) =>
           `<span class="trait ${sel.mutated.includes(slot) ? "mut" : ""}" title="${slot}${sel.mutated.includes(slot) ? " (mutation)" : ""}">${v}</span>`).join("")}</div>
+        ${sel.belief ? `<div class="persona">🌀 ${esc(sel.name)} ${esc(sel.belief)}.<br>🗣️ They ${esc(sel.voice.replace(/\byourself\b/g, "themself").replace(/\byour\b/g, "their"))}.</div>` : ""}
         ${["health", "hunger", "energy", "social"].map((k) => `
           <div class="bar"><span>${BAR_LABELS[k]}</span>
           <span class="track"><span class="fill" style="display:block;width:${sel[k]}%;background:${BAR_COLORS[k]}"></span></span>

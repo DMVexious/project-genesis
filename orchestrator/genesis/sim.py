@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .brain import Interaction, NpcView, clamp_words, describe_action
 from .memory import Memory
 from .engine_py import ELDER_AGE, MATURE_AGE
-from .traits import Genome, make_name, random_genome, random_look, splice, splice_look
+from .traits import (Genome, belief_text, make_name, random_genome, random_look, random_persona, splice,
+                     splice_look, splice_persona, voice_text)
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ class NpcMeta:
     mutated: list[str] = field(default_factory=list)
     pace: float = 1.0  # >1 = slower; every NPC moves and works at its own speed
     look: dict = field(default_factory=dict)  # inherited appearance (skin, hair, clothes...)
+    persona: dict = field(default_factory=dict)  # strange belief + way of talking (traits.BELIEFS/VOICES)
 
 
 @dataclass
@@ -56,10 +60,16 @@ class SimConfig:
     llm_interval: int = 18    # ticks between an NPC's LLM goal checks
     llm_budget: int = 3       # max brain requests in flight at once
     think_max_ticks: int = 40 # give up on a brain call after this many ticks (~6 s) and act on reflex
+    convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
 
 
 class Simulation:
     def __init__(self, engine, brain, memory, config: SimConfig):
+        # Memory embedding/queries get one dedicated worker thread. Using the
+        # shared default pool let a backlog of slow embeddings starve it, and
+        # asyncio resolves host names on that pool, so LLM requests stalled too.
+        self._mem_pool = ThreadPoolExecutor(1, thread_name_prefix="memory")
+        self._recall_pool = ThreadPoolExecutor(1, thread_name_prefix="recall")  # never queued behind a flush
         self.engine, self.brain, self.memory, self.cfg = engine, brain, memory, config
         # LLM brains carry a heuristic fallback; that same brain handles reflexes.
         self.reflex = getattr(brain, "fallback", brain)
@@ -69,6 +79,9 @@ class Simulation:
         if seed is not None:
             self.cfg.seed = seed
         self.rng = random.Random(self.cfg.seed)
+        # personas draw from their own stream so they don't shift the world's dice
+        self.persona_rng = random.Random(self.cfg.seed * 1_000_003 + 17)
+        self.news: deque[str] = deque(maxlen=6)  # recent village events NPCs gossip about
         self.memory.reset()
         for task in getattr(self, "pending", {}).values():
             task.cancel()
@@ -76,7 +89,8 @@ class Simulation:
                                       self.cfg.population, self.cfg.decay_every)
         self.meta: dict[int, NpcMeta] = {}
         for n in self.state["npcs"]:
-            self._register(n["id"], random_genome(self.rng), look=random_look(self.rng))
+            self._register(n["id"], random_genome(self.rng), look=random_look(self.rng),
+                           persona=random_persona(self.persona_rng))
         self.totals = {"births": 0, "deaths": 0, "huts": 0, "farms": 0, "fires": 0, "fights": 0, "trades": 0}
         self.homes: dict[int, tuple[int, int]] = {}  # NPC -> its home hut (built, inherited or claimed)
         self.vacant: set[tuple[int, int]] = set()    # huts whose owner died without an heir
@@ -88,6 +102,7 @@ class Simulation:
         self._last_seen: dict[int, tuple[int, frozenset]] = {}
         self.pending: dict[int, asyncio.Future] = {}   # brain calls in flight
         self.pending_since: dict[int, int] = {}        # tick each call was started
+        self.pending_kind: dict[int, str] = {}         # "decide" (pure LLM call) or "interact"
         self._flush_task: asyncio.Future | None = None
         self.llm_paused_until = 0  # backoff after the LLM missed a deadline
         self._llm_backoff = 0
@@ -116,7 +131,7 @@ class Simulation:
         home = self.homes.get(n["id"])
         dist = None if home is None else abs(home[0] - x0) + abs(home[1] - y0)
         return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(str(n["id"]), []),
-                       nearby["hut"], nearby, dist, n["age"] >= ELDER_AGE)
+                       nearby["hut"], nearby, dist, n["age"] >= ELDER_AGE, m.persona)
 
     def alive(self) -> list[dict]:
         return [n for n in self.state["npcs"] if n["alive"]]
@@ -167,7 +182,7 @@ class Simulation:
         free = max(0, self.cfg.llm_budget - len(self.pending))
         for i, (_, v) in enumerate(candidates):
             if i < free:
-                self._spawn(v.id, self._decide(v, names))
+                self._spawn(v.id, self._decide(v, names), "decide")
                 self.last_llm[v.id] = now
                 self.llm_neighbours[v.id] = self._neighbours(v)
             else:
@@ -179,7 +194,7 @@ class Simulation:
             act = views[nid].actions[idx]
             if act["kind"] == "interact" and nid not in lines:
                 del choices[nid]
-                self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex")))
+                self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex")), "interact")
 
         for nid in choices:
             v = views[nid]
@@ -201,6 +216,9 @@ class Simulation:
 
         # 6. Memory logging + births.
         log_lines = self._process_events(self.state["events"], lines, now)
+        for line in log_lines:
+            if " talks to " not in line:
+                self.news.append(line.lstrip("💀🪦🏠🔨🌱🔥🌀 ").strip())
         if now % 10 == 0:  # embedding is costly; batch it (recall() flushes first anyway)
             self._flush_memory()
         return self._frame(lines, log_lines)
@@ -209,7 +227,8 @@ class Simulation:
         # Embedding a batch can take a few hundred ms; do it off the event loop
         # so the tick loop and WebSocket broadcasts don't stall.
         if self._flush_task is None or self._flush_task.done():
-            self._flush_task = asyncio.ensure_future(asyncio.to_thread(self.memory.flush))
+            loop = asyncio.get_running_loop()
+            self._flush_task = loop.run_in_executor(self._mem_pool, self.memory.flush)
 
     async def settle(self):
         """Wait for every brain call in flight (used by the headless runner,
@@ -232,7 +251,10 @@ class Simulation:
         self.pending_since.pop(v.id, None)
         self.last_llm[v.id] = now
         self.llm_neighbours[v.id] = self._neighbours(v)
-        if waited >= self.cfg.think_max_ticks and self.reflex is not self.brain:
+        # Only a late pure LLM decision says the LLM is slow (an interaction can also
+        # wait on memory recall, which is not the LLM's fault).
+        if (waited >= self.cfg.think_max_ticks and self.reflex is not self.brain
+                and self.pending_kind.get(v.id) == "decide"):
             # The backend is stalled (cold load, overloaded GPU...). Stop routing
             # decisions to it for a while, doubling the pause on repeat misses.
             self._llm_backoff = min(400, max(self.cfg.think_max_ticks, self._llm_backoff * 2))
@@ -258,8 +280,9 @@ class Simulation:
         choices[v.id], sources[v.id] = (idx, 0), "reflex"
         self._commit_plan(v, v.actions[idx])
 
-    def _spawn(self, nid: int, coro):
+    def _spawn(self, nid: int, coro, kind: str):
         self.pending[nid] = asyncio.ensure_future(coro)
+        self.pending_kind[nid] = kind
         self.pending_since[nid] = self.state["tick"]
         self.activity[nid] = "thinking"
 
@@ -312,7 +335,8 @@ class Simulation:
     async def _recall(self, owner: int, other: int, k: int = 3):
         # Vector stores embed and query off the event loop; the in-memory store is instant.
         if getattr(self.memory, "blocking", False):
-            return await asyncio.to_thread(self.memory.recall, owner, other, k)
+            return await asyncio.get_running_loop().run_in_executor(
+                self._recall_pool, self.memory.recall, owner, other, k)
         return self.memory.recall(owner, other, k)
 
     async def _interaction(self, views: dict[int, NpcView], nid: int, act: dict, source: str) -> dict:
@@ -321,21 +345,23 @@ class Simulation:
         if other is None:
             return {"type": "act", "action": {"kind": "sleep"}, "source": source}
         recalled = await self._recall(nid, other.id)
+        news = list(self.news)
         ix = Interaction(me, other, act["options"], [m.text for m in recalled],
-                         self.memory.grudge(nid, other.id))
+                         self.memory.grudge(nid, other.id), news)
         brain = self.reflex if self.llm_paused() else self.brain
         option, said = await brain.choose_interaction(ix)
         said = clamp_words(said)
-        reply = None
-        if option in ("trade", "mate"):
-            their = await self._recall(other.id, nid)
-            rev = Interaction(other, me, act["options"], [m.text for m in their],
-                              self.memory.grudge(other.id, nid))
-            if not await brain.consent(rev, option, said):
-                reply = "No." if option == "trade" else "Not with you."
-                self.memory.log(Memory(nid, other.id, self.state["tick"], "refused",
-                                       f"{other.name} refused to {option} with me.", -1))
-                option = "talk"
+        their = await self._recall(other.id, nid)
+        rev = Interaction(other, me, act["options"], [m.text for m in their],
+                          self.memory.grudge(other.id, nid), news)
+        context = option
+        if option in ("trade", "mate") and not await brain.consent(rev, option, said):
+            self.memory.log(Memory(nid, other.id, self.state["tick"], "refused",
+                                   f"{other.name} refused to {option} with me.", -1))
+            context, option = f"refused_{option}", "talk"
+        # the listener always answers, so every encounter is an exchange, not a monologue
+        replier = brain if hasattr(brain, "reply") else self.reflex
+        reply = clamp_words(await replier.reply(rev, said, context))
         return {"type": "interact", "action": act, "option": option, "source": source,
                 "line": {"npc": nid, "target": other.id, "text": said, "reply": reply}}
 
@@ -411,10 +437,15 @@ class Simulation:
             t, a = e["type"], e["npc"]
             if t == "talk":
                 said = lines.get(a, {}).get("text", "")
+                reply = lines.get(a, {}).get("reply")
                 b = e["target"]
                 self._remember(a, b, tick, "talk", f'I told {nm(b)}: "{said}"', 1)
                 self._remember(b, a, tick, "talk", f'{nm(a)} told me: "{said}"', 1)
+                if reply:
+                    self._remember(a, b, tick, "talk", f'{nm(b)} answered me: "{reply}"', 0)
+                    self._remember(b, a, tick, "talk", f'I answered {nm(a)}: "{reply}"', 0)
                 out.append(f"{nm(a)} talks to {nm(b)}")
+                out.extend(self._maybe_convert(a, b, tick, nm))
             elif t == "attack":
                 b = e["target"]
                 self.totals["fights"] += 0 if e["retaliation"] else 1
@@ -436,9 +467,10 @@ class Simulation:
                 pa, pb = e["parents"]
                 genome, mutated = splice(self.meta[pa].genome, self.meta[pb].genome, self.rng)
                 look = splice_look(self.meta[pa].look, self.meta[pb].look, self.rng)
+                persona = splice_persona(self.meta[pa].persona, self.meta[pb].persona, self.persona_rng)
                 gen = max(self.meta[pa].generation, self.meta[pb].generation) + 1
                 child = self._register(a, genome, generation=gen, parents=[pa, pb],
-                                       born_tick=tick, mutated=mutated, look=look)
+                                       born_tick=tick, mutated=mutated, look=look, persona=persona)
                 self.totals["births"] += 1
                 for p, q in ((pa, pb), (pb, pa)):
                     self._remember(p, q, tick, "mate", f"{nm(q)} and I had a child, {child.name}.", 3)
@@ -477,6 +509,22 @@ class Simulation:
                     self.homes[a] = hut
                     out.append(f"🏠 {nm(a)} moves into an empty hut")
         return out
+
+    def _maybe_convert(self, a: int, b: int, tick: int, nm) -> list[str]:
+        """Beliefs are contagious: a talk can convert the listener. Charismatic
+        speakers preach better, paranoid listeners resist, enemies never convince."""
+        pa, pb = self.meta[a].persona, self.meta[b].persona
+        if not pa or not pb or pa["belief"] == pb["belief"] or self.memory.grudge(b, a) < 0:
+            return []
+        chance = self.cfg.convert_chance
+        chance *= 2 if self.meta[a].genome.social == "Charismatic" else 1
+        chance *= 0.25 if self.meta[b].genome.social == "Paranoid" else 1
+        if self.persona_rng.random() >= chance:
+            return []
+        pb["belief"] = pa["belief"]
+        belief = belief_text(pa)
+        self._remember(b, a, tick, "convert", f"{nm(a)} opened my eyes: now I {belief[:1].lower() + belief[1:]}.", 2)
+        return [f"🌀 {nm(a)} converts {nm(b)}: {nm(b)} now {belief}"]
 
     def _pass_on_home(self, dead: int, nm) -> list[str]:
         """A home goes to the eldest living child who has none; otherwise it
@@ -535,6 +583,8 @@ class Simulation:
                 **{k: n[k] for k in ("id", "x", "y", "alive", "health", "hunger", "energy", "social",
                                      "wood", "food", "spear", "age", "cause")},
                 "name": m.name, "traits": m.genome.to_dict(), "generation": m.generation,
+                "belief": belief_text(m.persona) if m.persona else "",
+                "voice": voice_text(m.persona) if m.persona else "",
                 "parents": m.parents, "mutated": m.mutated,
                 "emoji": action_emoji.get(n["id"], ""), "status": status,
                 "intent": "Thinking…" if nid in self.pending else self.intent.get(nid, ""),

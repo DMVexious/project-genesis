@@ -93,3 +93,79 @@ def random_look(rng: random.Random) -> dict[str, str]:
 def splice_look(a: dict, b: dict, rng: random.Random, mutation_rate: float = MUTATION_RATE) -> dict[str, str]:
     return {slot: rng.choice(pool) if rng.random() < mutation_rate else (a if rng.random() < 0.5 else b)[slot]
             for slot, pool in LOOK_POOLS.items()}
+
+
+# --- Persona ------------------------------------------------------------------
+# Every NPC carries one strange belief and one way of talking. They go into the
+# dialogue prompt so speech is specific instead of "Hello, how are you?". Beliefs
+# are inherited (families share their madness) and spread through conversation,
+# so cults and feuding folklores can form. Each belief has a sample line that
+# the heuristic brain says and that the LLM sees as a tone example.
+BELIEFS: list[tuple[str, str]] = [
+    ("believes the dead come back as crows and keep score", "That crow owes me three berries. It knows."),
+    ("is sure every tree remembers each axe that touched it", "Chop quietly. The old ones are counting."),
+    ("thinks the moon is a hole someone forgot to fill in", "Don't look up tonight. It's open again."),
+    ("keeps a rock named Grumm and asks it for advice", "Grumm says you smell like a liar."),
+    ("believes their shadow is a separate person who hates them", "My shadow tried to trip me again."),
+    ("is convinced they already died once and nobody noticed", "I died last spring. Still hungry though."),
+    ("worships the first campfire as a god", "The Fire is hungry. Bring it your sticks."),
+    ("thinks hunger is a small animal living in the belly", "My belly beast bit me all night."),
+    ("believes berries are the eyes of something buried", "I ate an eye today. It blinked first."),
+    ("thinks names are borrowed and must be returned at death", "When you die, I want your name."),
+    ("insists the sky is sinking a little lower every night", "The sky touched my hair today. Run."),
+    ("believes huts steal your dreams while you sleep", "Huts eat dreams. I sleep in dirt."),
+    ("thinks the edge of the world is just past the trees", "Past those trees, nothing. I checked."),
+    ("is secretly certain one villager is a ghost", "One of us has no footprints. Watch."),
+    ("eats dirt for luck and recommends it to everyone", "Eat dirt. Trust me. Tastes like luck."),
+    ("believes babies are born knowing a secret, then forget it", "Your baby knew. Now it forgot. Sad."),
+    ("plans to marry the wind", "The wind and I are engaged. Jealous?"),
+    ("thinks fire is alive and only pretends to be hungry", "Fire's faking. It's full. Always full."),
+    ("believes they are the lost king of a forgotten kingdom", "Kneel, peasant. I was king once."),
+    ("thinks counting to a hundred makes time stop", "Shh, I'm at sixty. Don't move."),
+    ("keeps a tally of every insult ever said to them", "That's forty-one. I wrote it in my head."),
+    ("believes stars are other villages' campfires, far away", "Someone up there is cooking. Smell it?"),
+    ("is building a tower to talk to the clouds", "Clouds want wood. Lots. Give me yours."),
+    ("believes spears have souls and get lonely", "My spear misses blood. Hold still."),
+    ("thinks the ground is the back of a sleeping giant", "Step softly. He twitched this morning."),
+    ("collects teeth and thinks they whisper prophecies", "My teeth say you die on a Tuesday."),
+]
+
+VOICES = [
+    "talk in blunt broken fragments, like a caveman",
+    "talk like a doom prophet announcing the end",
+    "answer everything with an unsettling question",
+    "speak in pompous, old-fashioned royal language",
+    "are bone-dry and sarcastic",
+    "ramble nervously and change topic mid-sentence",
+    "always talk about yourself in the third person, by name",
+    "talk like a shifty con artist always selling something",
+    "speak only in riddles",
+    "overshare gross bodily details",
+    "are relentlessly, creepily cheerful",
+    "whisper conspiracies about the other villagers",
+    "flirt with everyone, badly",
+    "talk like a tired old soldier who has seen too much",
+    "insult people as a form of affection",
+    "speak like a tiny, very serious philosopher",
+]
+
+PERSONA_MUTATION = 0.25  # chance a child invents a belief/voice instead of inheriting one
+
+
+def random_persona(rng: random.Random) -> dict[str, int]:
+    """Indices into BELIEFS / VOICES (ints keep the frame small)."""
+    return {"belief": rng.randrange(len(BELIEFS)), "voice": rng.randrange(len(VOICES))}
+
+
+def splice_persona(a: dict, b: dict, rng: random.Random) -> dict[str, int]:
+    fresh = random_persona(rng)
+    return {k: fresh[k] if rng.random() < PERSONA_MUTATION else (a if rng.random() < 0.5 else b)[k]
+            for k in ("belief", "voice")}
+
+
+def belief_text(p: dict) -> str:
+    return BELIEFS[p["belief"]][0]
+
+
+def voice_text(p: dict) -> str:
+    return VOICES[p["voice"]]
