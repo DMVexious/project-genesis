@@ -230,11 +230,31 @@ def _trigrams(text: str) -> set[tuple[str, ...]]:
 _EXAMPLE_TRIGRAMS = [_trigrams(line) for _, line in BELIEFS]
 
 
+class Canned(str):
+    """A pre-written line (heuristic brain), as opposed to one the LLM wrote."""
+
+
+def is_junk(line: str) -> bool:
+    """Output that isn't speech: empty, "...", stray JSON/markup, or no real words
+    (1B models do this). It earns a re-roll, then a canned line."""
+    t = line.strip()
+    return (not re.search(r"[A-Za-z]{2,}", t) or t[:1] in "{[<" or '":' in t
+            or "rumour_about" in t or "they_said" in t)
+
+
+def spoken(line: str) -> str:
+    """The model's line, cleaned; raises (so the caller falls back) if it's junk."""
+    line = clamp_words(line.strip().lstrip("/-*").strip().strip('"').strip())
+    if is_junk(line):
+        raise ValueError(f"junk line {line!r}")
+    return line
+
+
 def is_generic(line: str, own_belief: int = -1) -> bool:
     """Bland small talk, or a line parroted from the tone examples (small
     models copy them); either earns a re-roll. An NPC may quote its own belief."""
     low = line.lower()
-    if any(b in low for b in BANNED):
+    if is_junk(line) or any(b in low for b in BANNED):
         return True
     tri = _trigrams(line)
     return any(tri & ex for i, ex in enumerate(_EXAMPLE_TRIGRAMS) if i != own_belief)
@@ -351,6 +371,13 @@ class HeuristicBrain:
         return best
 
     async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
+        option, line = await self._choose_interaction(ix)
+        return option, Canned(line)
+
+    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+        return Canned(await self._reply(ix, heard, option))
+
+    async def _choose_interaction(self, ix: Interaction) -> tuple[str, str]:
         g = ix.me.genome
         weights = {
             "talk": 30.0,
@@ -369,7 +396,7 @@ class HeuristicBrain:
         pool = LINES[option].get(g.aggression) or LINES[option]["*"]
         return option, self.rng.choice(pool)
 
-    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+    async def _reply(self, ix: Interaction, heard: str, option: str) -> str:
         if option.startswith("refused_"):
             return self.rng.choice(["No." if option == "refused_trade" else "Not with you.",
                                     "I would rather hug a tree.", "Ask me when the sky falls."])
@@ -466,7 +493,7 @@ class LlamaBrain:
                     raise ValueError(f"bad option {option!r}")
                 if not is_generic(line, ix.me.persona.get("belief", -1)):
                     break
-            return option, clamp_words(line.strip()) or "..."
+            return option, spoken(line)
         except Exception as e:
             self._failed("interaction", e)
             return await self.fallback.choose_interaction(ix)
@@ -477,7 +504,7 @@ class LlamaBrain:
                 out = await self._complete(reply_prompt(ix, heard, option), REPLY_GRAMMAR, 40, self.talk_temperature)
                 if not is_generic(out, ix.me.persona.get("belief", -1)):
                     break
-            return clamp_words(out.strip()) or "..."
+            return spoken(out)
         except Exception as e:
             self._failed("reply", e)
             return await self.fallback.reply(ix, heard, option)
@@ -594,7 +621,7 @@ class OllamaBrain(LlamaBrain):
                     raise ValueError(f"bad option {out['option']!r}")
                 if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
                     break
-            return out["option"], clamp_words(str(out["line"]).strip()) or "..."
+            return out["option"], spoken(str(out["line"]))
         except Exception as e:
             self._failed("interaction", e)
             return await self.fallback.choose_interaction(ix)
@@ -606,7 +633,7 @@ class OllamaBrain(LlamaBrain):
                 out = await self._chat(reply_prompt(ix, heard, option), schema, 56, self.talk_temperature)
                 if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
                     break
-            return clamp_words(str(out["line"]).strip()) or "..."
+            return spoken(str(out["line"]))
         except Exception as e:
             self._failed("reply", e)
             return await self.fallback.reply(ix, heard, option)
@@ -622,7 +649,7 @@ class OllamaBrain(LlamaBrain):
 
 
 async def make_brain(kind: str, url: str, seed: int, ollama_url: str = "http://127.0.0.1:11434",
-                     model: str = "bonsai-2:2b"):
+                     model: str = "llama3.2:1b"):
     """kind: 'auto' (llama.cpp if up, else Ollama if it has `model`, else heuristic),
     'llm' (llama.cpp), 'ollama', or 'heuristic'."""
     heuristic = HeuristicBrain(seed)

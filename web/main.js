@@ -14,6 +14,9 @@
   // Speech bubbles fade this many ticks after they appear. Ticks are short now
   // (~150 ms; NPC actions span several), so this is ~3.5 s - long enough to read.
   const BUBBLE_TICKS = 24;
+  const BUBBLE_MIN_MS = 6000;   // ...and never before 6 s, however fast the sim runs
+  const REPLY_DELAY_MS = 1200;  // the listener's answer appears this long after the line
+  const MAX_TALKS = 60;         // exchanges kept in the Conversations feed
   const GRAVE_TICKS = 400; // graves stay ~1 minute
   const MAX_GRAVES = 80;
   const AGGRO_COLOR = { Pacifist: 0x7bb661, Neutral: 0x6aa6d8, Hostile: 0xe0a458, Bloodthirsty: 0xd9534f };
@@ -57,7 +60,8 @@
     selected: null,
     names: new Map(),
     sprites: new Map(), // id -> { sprite, shadow, spear, tag, statusEl, actionEl, key, dying }
-    bubbles: new Map(), // id -> { el, tick }
+    bubbles: new Map(), // id -> { el, tick, born }
+    talks: [],          // recent exchanges, newest first: { tick, a, b, kind, said, reply }
     graves: [],         // { img, tick }
     tiles: [],
     fires: [],          // campfire tile images (animated)
@@ -505,18 +509,25 @@
     if (b) { b.el.remove(); state.bubbles.delete(id); }
   }
 
+  function showBubble(d, tick) {
+    const old = state.bubbles.get(d.npc);
+    if (old) old.el.remove();
+    const el = document.createElement("div");
+    el.className = `bubble ${d.kind || ""}`;
+    el.textContent = d.text;  // the server already caps lines at MAX_WORDS
+    overlay.appendChild(el);
+    state.bubbles.set(d.npc, { el, tick, born: performance.now() });
+  }
+
   function renderBubbles(f) {
     for (const d of f.dialogue) {
-      const old = state.bubbles.get(d.npc);
-      if (old) old.el.remove();
-      const el = document.createElement("div");
-      el.className = `bubble ${d.kind || ""}`;
-      el.textContent = d.text.split(/\s+/).slice(0, 10).join(" ");
-      overlay.appendChild(el);
-      state.bubbles.set(d.npc, { el, tick: f.tick });
+      // the answer pops up a beat after the line it answers, so it reads as an exchange
+      if (d.reply) setTimeout(() => { if (state.sprites.has(d.npc)) showBubble(d, state.frame.tick); }, REPLY_DELAY_MS);
+      else showBubble(d, f.tick);
     }
+    const now = performance.now();
     for (const [id, b] of state.bubbles) {
-      if (f.tick >= b.tick + BUBBLE_TICKS && !b.el.classList.contains("fade")) {
+      if (f.tick >= b.tick + BUBBLE_TICKS && now - b.born >= BUBBLE_MIN_MS && !b.el.classList.contains("fade")) {
         b.el.classList.add("fade");
         b.el.addEventListener("animationend", () => {
           b.el.remove();
@@ -630,10 +641,25 @@
         <div class="intent">${sel.alive ? "▶ " + esc(sel.intent || "…") + (SOURCE_LABEL[sel.source] || "") : "died: " + esc(sel.cause)}</div>`;
     }
 
+    if (f.dialogue.length) {
+      for (const d of f.dialogue) {
+        if (d.reply) continue;
+        const r = f.dialogue.find((x) => x.reply && x.npc === d.target && x.target === d.npc);
+        state.talks.unshift({ tick: f.tick, a: d.npc, b: d.target, kind: d.kind, said: d.text, reply: r ? r.text : null,
+                              llm: !!d.llm, replyLlm: !!(r && r.llm) });
+      }
+      state.talks.length = Math.min(state.talks.length, MAX_TALKS);
+      renderTalks();
+    }
+    if (sel) {
+      const mine = state.talks.filter((t) => t.a === sel.id || t.b === sel.id).slice(0, 4);
+      det.insertAdjacentHTML("beforeend", `<div class="sub">Recent conversations</div>` +
+        (mine.length ? `<ol class="talks">${mine.map(talkHtml).join("")}</ol>` : `<div class="hint">Hasn't spoken to anyone yet.</div>`));
+    }
+
     const log = $("log");
     const items = [];
-    for (const d of f.dialogue) items.push(`<li><b>${f.tick}</b>💬 ${esc(state.names.get(d.npc) || "?")}: “${esc(d.text)}”</li>`);
-    for (const line of f.log) items.push(`<li><b>${f.tick}</b>${esc(line)}</li>`);
+    for (const line of f.log.filter((l) => !l.includes(" talks to "))) items.push(`<li><b>${f.tick}</b>${esc(line)}</li>`);
     if (items.length) {
       log.insertAdjacentHTML("afterbegin", items.reverse().join(""));
       while (log.children.length > 150) log.lastChild.remove();
@@ -641,6 +667,27 @@
 
     $("banner").hidden = s.population > 0;
     $("banner").textContent = "Extinction. Start a new world →";
+  }
+
+  const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", mate: "💞" };
+  const KIND_VERB = { talk: "to", fight: "attacking", trade: "trading with", mate: "courting" };
+
+  function talkHtml(t) {
+    const who = (id) => `<a data-id="${id}">${esc(state.names.get(id) || "?")}</a>`;
+    return `<li class="talk ${t.kind}">
+      <div class="head"><b>${t.tick}</b> ${KIND_ICON[t.kind] || "💬"} ${who(t.a)} <span>${KIND_VERB[t.kind] || "to"}</span> ${who(t.b)}</div>
+      <div class="line ${t.llm ? "llm" : ""}">${who(t.a)}: “${esc(t.said)}”${t.llm ? LLM_MARK : ""}</div>
+      ${t.reply ? `<div class="line reply ${t.replyLlm ? "llm" : ""}">${who(t.b)}: “${esc(t.reply)}”${t.replyLlm ? LLM_MARK : ""}</div>` : ""}
+    </li>`;
+  }
+
+  const LLM_MARK = ` <span class="mark" title="written by the LLM (unmarked lines are pre-written)">🧠</span>`;
+
+  function renderTalks() {
+    const llmOnly = $("llm-only").checked;
+    const shown = llmOnly ? state.talks.filter((t) => t.llm || t.replyLlm) : state.talks;
+    $("talks").innerHTML = shown.length ? shown.map(talkHtml).join("")
+      : `<li class="hint">${llmOnly ? "No LLM-written lines yet." : "Nobody has spoken yet. NPCs talk when they meet."}</li>`;
   }
 
   function select(id) {
@@ -698,6 +745,8 @@
     state.graves = [];
     state.names.clear();
     state.selected = null;
+    state.talks = [];
+    renderTalks();
     $("log").innerHTML = "";
   }
 
@@ -713,6 +762,16 @@
     const li = e.target.closest("li[data-id]");
     if (li) select(Number(li.dataset.id));
   };
+  $("llm-only").onchange = () => {
+    try { localStorage.setItem("genesis.llmOnly", $("llm-only").checked ? "1" : ""); } catch (e) { /* storage off */ }
+    renderTalks();
+  };
+  try { $("llm-only").checked = localStorage.getItem("genesis.llmOnly") === "1"; } catch (e) { /* storage off */ }
+  // clicking a name in a conversation follows that NPC
+  for (const box of [$("talks"), $("detail")]) box.addEventListener("click", (e) => {
+    const a = e.target.closest("a[data-id]");
+    if (a) select(Number(a.dataset.id));
+  });
   document.addEventListener("keydown", (e) => {
     if (e.code === "Space" && e.target.tagName !== "INPUT") {
       e.preventDefault();

@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Phaser-3.90-8E44AD" alt="Phaser">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri">
-  <img src="https://img.shields.io/badge/Ollama-bonsai--2%3A2b-000000?logo=ollama&logoColor=white" alt="Ollama">
+  <img src="https://img.shields.io/badge/Ollama-llama3.2%3A1b-000000?logo=ollama&logoColor=white" alt="Ollama">
   <img src="https://img.shields.io/badge/llama.cpp-GBNF-6E4C13" alt="llama.cpp GBNF">
   <img src="https://img.shields.io/badge/ChromaDB-RAG%20memory-FF6446" alt="ChromaDB">
   <img src="https://img.shields.io/badge/Windows-installer-0078D6?logo=windows&logoColor=white" alt="Windows">
@@ -36,7 +36,7 @@
 | <img src="docs/media/village.gif" alt="Huts, farms and campfires" width="270"> | <img src="docs/media/talk.gif" alt="NPCs talking and trading" width="270"> | <img src="docs/media/life.gif" alt="Following one villager" width="270"> |
 | Huts become homes, farms ripen, campfires flicker. Every building is an NPC's own choice | Speech bubbles come straight from the LLM, shaped by remembered grudges and friendships | Children inherit traits and looks, elders turn grey, and graves mark the dead |
 
-All clips are the simulation running live with `bonsai-2:2b` on Ollama: no scripted events.
+All clips are the simulation running live on Ollama: no scripted events.
 
 ## What it is
 
@@ -87,7 +87,8 @@ The orchestrator starts `ollama serve` if it isn't running, pre-loads the model
 at launch (the first cold load can take about a minute), then each NPC call takes about 0.5 s.
 
 ```
---model bonsai-2:2b          # default; or set GENESIS_MODEL (works for the desktop app too)
+--model llama3.2:1b          # default (fastest); bonsai-2:2b is ~2x slower but more in character
+                             # or set GENESIS_MODEL (works for the desktop app too)
 --brain ollama               # force Ollama;  --ollama-url to point elsewhere
 ```
 
@@ -97,7 +98,7 @@ Ollama compiles to a grammar: `{"action": <enum of valid indices>}`,
 Note: `OLLAMA_NUM_PARALLEL` gave no speed-up with bonsai-2:2b on an RTX 5060 (0.30 s/call serial vs 0.32 s at 4-way), so leave it at the default.
 **Hybrid cognition.** Each NPC decision comes from one of three sources, shown in the UI:
 
-* 🧠 **LLM:** when someone new is adjacent (a social moment), plus a goal check every `--llm-every` ticks (default 18). At most `--llm-budget` calls in flight at once (default 3), social moments first and then the most overdue.
+* 🧠 **LLM:** when someone new is adjacent (a social moment), plus a goal check every `--llm-every` ticks (default 18). At most `--llm-budget` decision calls in flight at once (default 2), social moments first and then the most overdue. Separately, at most 3 conversations (`talk_budget`) use the LLM at once; extra ones use pre-written lines, so the LLM queue never piles up.
 * ⚡ **reflex:** survival and routine choices (energy < 20, fullness < 30, only one option, or over budget), made instantly by the heuristic brain.
 * ↻ **plan:** keep walking toward the goal already chosen until arrival or interruption (hurt, someone new adjacent, starving or exhausted, or after 12 ticks).
 
@@ -143,7 +144,7 @@ and one way of talking ("speaks only in riddles"); both show in the NPC panel.
   Every action lasts several ticks: a step ~2, chopping ~5, sleeping ~7, building ~10. That is
   scaled by each NPC's own pace (0.8 to 1.5x) plus random jitter, so NPCs act out of step with each
   other. Bonsai calls run in the background: an NPC shows 💭 while it waits, and everyone else
-  carries on. At most `--llm-budget` (default 3) calls are in flight at once.
+  carries on. At most `--llm-budget` (default 2) decision calls and 3 conversations are in flight at once.
 * **World time.** Hunger, energy, ageing and regrowth advance once every `decay_every` = 3 ticks
   (the optional 5th `INIT` argument), so survival balance holds with multi-tick actions.
 * **Map.** The default is 80x56 with 16 settlers (`--width/--height/--population`). The view is a

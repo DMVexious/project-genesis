@@ -17,7 +17,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from .brain import Interaction, NpcView, clamp_words, describe_action
+from .brain import Canned, Interaction, NpcView, clamp_words, describe_action
 from .memory import Memory
 from .engine_py import ELDER_AGE, MATURE_AGE
 from .traits import (Genome, belief_text, make_name, random_genome, random_look, random_persona, splice,
@@ -58,7 +58,9 @@ class SimConfig:
     decay_every: int = 3      # ticks per unit of world time (hunger, energy, ageing, regrowth)
     plan_max_ticks: int = 12  # re-ask the brain at least this often while walking (steps)
     llm_interval: int = 18    # ticks between an NPC's LLM goal checks
-    llm_budget: int = 3       # max brain requests in flight at once
+    llm_budget: int = 2       # max brain requests in flight at once
+    talk_budget: int = 3      # max conversations using the LLM at once (each makes up to 5 calls);
+                              # extra ones talk on reflex so the LLM queue never piles up
     think_max_ticks: int = 40 # give up on a brain call after this many ticks (~6 s) and act on reflex
     convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
 
@@ -103,6 +105,7 @@ class Simulation:
         self.pending: dict[int, asyncio.Future] = {}   # brain calls in flight
         self.pending_since: dict[int, int] = {}        # tick each call was started
         self.pending_kind: dict[int, str] = {}         # "decide" (pure LLM call) or "interact"
+        self.llm_talks = 0  # conversations in flight that are using the LLM
         self._flush_task: asyncio.Future | None = None
         self.llm_paused_until = 0  # backoff after the LLM missed a deadline
         self._llm_backoff = 0
@@ -194,7 +197,11 @@ class Simulation:
             act = views[nid].actions[idx]
             if act["kind"] == "interact" and nid not in lines:
                 del choices[nid]
-                self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex")), "interact")
+                use_llm = self.reflex is not self.brain and self.llm_talks < self.cfg.talk_budget
+                self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex"), use_llm), "interact")
+                if use_llm:  # released when the task ends, even if it is cancelled before it starts
+                    self.llm_talks += 1
+                    self.pending[nid].add_done_callback(self._talk_done)
 
         for nid in choices:
             v = views[nid]
@@ -339,7 +346,11 @@ class Simulation:
                 self._recall_pool, self.memory.recall, owner, other, k)
         return self.memory.recall(owner, other, k)
 
-    async def _interaction(self, views: dict[int, NpcView], nid: int, act: dict, source: str) -> dict:
+    def _talk_done(self, _task):
+        self.llm_talks = max(0, self.llm_talks - 1)
+
+    async def _interaction(self, views: dict[int, NpcView], nid: int, act: dict, source: str,
+                           use_llm: bool = True) -> dict:
         me = views[nid]
         other = views.get(act["target"])
         if other is None:
@@ -348,8 +359,9 @@ class Simulation:
         news = list(self.news)
         ix = Interaction(me, other, act["options"], [m.text for m in recalled],
                          self.memory.grudge(nid, other.id), news)
-        brain = self.reflex if self.llm_paused() else self.brain
+        brain = self.brain if use_llm and not self.llm_paused() else self.reflex
         option, said = await brain.choose_interaction(ix)
+        said_llm = not isinstance(said, Canned)  # the LLM brain hands back a Canned line when it fails
         said = clamp_words(said)
         their = await self._recall(other.id, nid)
         rev = Interaction(other, me, act["options"], [m.text for m in their],
@@ -361,9 +373,11 @@ class Simulation:
             context, option = f"refused_{option}", "talk"
         # the listener always answers, so every encounter is an exchange, not a monologue
         replier = brain if hasattr(brain, "reply") else self.reflex
-        reply = clamp_words(await replier.reply(rev, said, context))
+        reply = await replier.reply(rev, said, context)
+        reply_llm = not isinstance(reply, Canned)
         return {"type": "interact", "action": act, "option": option, "source": source,
-                "line": {"npc": nid, "target": other.id, "text": said, "reply": reply}}
+                "line": {"npc": nid, "target": other.id, "text": said, "reply": clamp_words(reply),
+                         "llm": said_llm, "reply_llm": reply_llm}}
 
     # --- hybrid routing ----------------------------------------------------------
     def _llm_priority(self, v: NpcView, tick: int) -> tuple | None:
@@ -600,10 +614,10 @@ class Simulation:
         for d in lines.values():
             if d:
                 dialogue.append({"npc": d["npc"], "target": d["target"], "text": d["text"], "tick": tick,
-                                 "kind": d["option"]})
+                                 "kind": d["option"], "llm": d.get("llm", False)})
                 if d.get("reply"):
                     dialogue.append({"npc": d["target"], "target": d["npc"], "text": d["reply"], "tick": tick,
-                                     "kind": "talk"})
+                                     "kind": "talk", "reply": True, "llm": d.get("reply_llm", False)})
 
         frame = {
             "type": "frame", "tick": tick, "width": self.state["width"], "height": self.state["height"],
