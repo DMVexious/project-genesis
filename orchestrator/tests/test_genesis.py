@@ -226,6 +226,33 @@ class BrainTests(unittest.TestCase):
         self.assertFalse(is_generic("Grumm says you smell bad.", own_belief=3))  # its own belief is fine
         self.assertFalse(is_generic("Your knees look delicious, Bo."))
 
+    def test_interaction_prompt_explains_options(self):
+        # bare "mate" was never picked by small models; each option now says what it means
+        s = PyEngine().init(2, 16, 12, 2)
+        a, b = s["npcs"][:2]
+        me = NpcView(a["id"], "Ash", Genome("Neutral", "Lazy", "Charismatic"), a, [])
+        them = NpcView(b["id"], "Bo", Genome("Pacifist", "Lazy", "Loner"), b, [])
+        ix = Interaction(me, them, ["talk", "mate"], [], 3)
+        payload = json.loads(interaction_prompt(ix)[1]["content"].split("\n")[0])
+        self.assertEqual(set(payload["options"]), {"talk", "mate"})
+        self.assertIn("family", payload["options"]["mate"])
+        self.assertIn("social_urge", payload["you"])
+        self.assertIn('"mate"', interaction_grammar(ix.options))  # the grammar still uses the bare keys
+
+
+class BreedingTests(unittest.TestCase):
+    def test_parents_rest_after_a_child(self):
+        from genesis import engine_py as E
+        w = E.World(1, 16, 12, 2)
+        a, b = w.npcs[:2]
+        for n in (a, b):
+            n.age, n.social, n.hunger, n.health = 200, 100, 100, 100
+        b.x, b.y = a.x + 1, a.y
+        ok_before = w.mate_ok(a, b)
+        a.rest = E.MATE_COOLDOWN
+        self.assertTrue(ok_before or len(w.alive()) >= E.POP_CAP)
+        self.assertFalse(w.mate_ok(a, b))
+
 
 class SimTests(unittest.TestCase):
     def test_sim_runs_and_logs_memories(self):
@@ -241,6 +268,13 @@ class SimTests(unittest.TestCase):
                 self.assertLessEqual(len(d["text"].split()), MAX_WORDS)
             for n in f["npcs"]:
                 self.assertIn(n["id"], sim.meta)
+        # frames carry the engine events the front end animates (swings, chops, ...)
+        fx = [e for f in frames for e in f["fx"]]
+        self.assertTrue(any(e["type"] in ("chop", "forage", "eat") for e in fx))
+        for e in fx:
+            if e["type"] == "attack":
+                self.assertIn("target", e)
+                self.assertIn("damage", e)
         births = [m for m in sim.meta.values() if m.parents]
         for child in births:
             pa, pb = (sim.meta[p].genome for p in child.parents)

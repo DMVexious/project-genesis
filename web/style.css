@@ -28,6 +28,25 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
   background: rgba(0, 0, 0, .75); padding: 8px 16px; border-radius: 6px; font-weight: 600;
 }
 
+/* --- replay timeline ------------------------------------------------------ */
+#timeline {
+  position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 6px;
+  background: rgba(23, 19, 15, .86); border: 1px solid #4a3d30; border-radius: 8px; padding: 6px 8px;
+  font-size: 12px; backdrop-filter: blur(3px); z-index: 5;  /* above speech bubbles */
+}
+#timeline[hidden] { display: none; }
+#timeline button { padding: 2px 8px; min-width: 30px; }
+#timeline select { background: var(--panel-2); color: var(--ink); border: 1px solid #4a3d30; border-radius: 4px; font: inherit; }
+#tl-scrub { flex: 1; min-width: 60px; accent-color: var(--accent); }
+#tl-tick { font-family: var(--mono); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#tl-badge { display: none; color: var(--accent); font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+#tl-live { color: var(--good); font-weight: 700; }
+body.replaying #timeline { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+body.replaying #tl-badge { display: inline; }
+body.replaying #tl-live { color: var(--muted); }
+body.replaying #game canvas { filter: sepia(.25) saturate(.9); }
+@media (max-width: 700px) { #tl-badge, #tl-speed { display: none !important; } }
+
 /* --- panel ------------------------------------------------------------- */
 #panel[hidden] { display: none; }
 #panel {

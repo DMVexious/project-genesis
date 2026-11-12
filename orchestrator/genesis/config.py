@@ -22,7 +22,7 @@ def add_sim_args(p: argparse.ArgumentParser):
                    help="auto = llama.cpp if its server answers, else Ollama, else heuristic")
     p.add_argument("--llm-url", default="http://127.0.0.1:8080", help="llama-server base URL")
     p.add_argument("--ollama-url", default=os.environ.get("OLLAMA_HOST_URL", "http://127.0.0.1:11434"))
-    p.add_argument("--model", default=os.environ.get("GENESIS_MODEL", "llama3.2:1b"),
+    p.add_argument("--model", default=os.environ.get("GENESIS_MODEL", "bonsai-2:2b"),
                    help="Ollama model name (env GENESIS_MODEL)")
     p.add_argument("--llm-every", type=int, default=18,
                    help="ticks between each NPC's LLM goal check; social moments always use the LLM")

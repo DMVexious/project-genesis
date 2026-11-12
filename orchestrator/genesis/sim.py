@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 ACTION_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "❤️", "forage": "🍒",
                 "eat": "🍖", "trade": "🤝", "talk": "💬", "craft": "🗡️", "death": "💀"}
 BUILD_EMOJI = {"hut": "🔨", "farm": "🌱", "fire": "🔥"}
+FX_EVENTS = {"attack", "chop", "forage", "build", "eat", "craft", "sleep", "talk", "trade", "birth", "death"}
 
 # Base duration of each action in ticks, before the NPC's pace and random jitter.
 ACTION_TICKS = {"goto": 2, "goto_npc": 2, "wander": 3, "chop": 5, "forage": 3, "eat": 2,
@@ -60,7 +61,9 @@ class SimConfig:
     llm_interval: int = 18    # ticks between an NPC's LLM goal checks
     llm_budget: int = 2       # max brain requests in flight at once
     talk_budget: int = 3      # max conversations using the LLM at once (each makes up to 5 calls);
-                              # extra ones talk on reflex so the LLM queue never piles up
+                              # with the LLM on, extra NPCs do something else instead of talking
+    talk_cooldown: int = 90   # ticks before an NPC starts another conversation (~15 s); keeps it calm
+    courtship: int = 2        # affection (friendly exchanges, both ways) needed before "mate" is offered
     think_max_ticks: int = 40 # give up on a brain call after this many ticks (~6 s) and act on reflex
     convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
 
@@ -106,6 +109,8 @@ class Simulation:
         self.pending_since: dict[int, int] = {}        # tick each call was started
         self.pending_kind: dict[int, str] = {}         # "decide" (pure LLM call) or "interact"
         self.llm_talks = 0  # conversations in flight that are using the LLM
+        self.last_talk: dict[int, int] = {}  # tick each NPC last started a conversation
+        self.listening_to: dict[int, int] = {}  # speaker -> who they are talking to (latest conversation)
         self._flush_task: asyncio.Future | None = None
         self.llm_paused_until = 0  # backoff after the LLM missed a deadline
         self._llm_backoff = 0
@@ -152,6 +157,12 @@ class Simulation:
         views = {nid: self.view(n) for nid, n in living.items()}
         now = self.state["tick"] + 1  # the tick about to be executed
         self._harvest(living)
+        # Someone being spoken to waits for the speaker to finish (the LLM takes a few
+        # seconds to write the lines). Without this, partners wandered off mid-proposal:
+        # 10 of 14 accepted proposals in one run never reached the engine.
+        listeners = {t for s, t in self.listening_to.items()
+                     if (s in self.pending and self.pending_kind.get(s) == "interact")
+                     or self.ready.get(s, {}).get("type") == "interact"}
 
         choices: dict[int, tuple[int, int]] = {}
         sources: dict[int, str] = {}
@@ -165,6 +176,8 @@ class Simulation:
                     continue
                 self._reflex(v, choices, sources)  # too slow or in danger: act now
                 continue
+            if nid in listeners and v.stats["hunger"] >= 20 and v.stats["energy"] >= 10:
+                continue  # listening: stay put (the speaker gives up after think_max_ticks anyway)
             ready = self.ready.pop(nid, None)
             if ready is not None and self._apply_ready(v, ready, choices, sources, lines):
                 continue
@@ -196,9 +209,23 @@ class Simulation:
         for nid, (idx, _) in list(choices.items()):
             act = views[nid].actions[idx]
             if act["kind"] == "interact" and nid not in lines:
+                llm_on = self.reflex is not self.brain
+                cooling = now - self.last_talk.get(nid, -10**9) < self.cfg.talk_cooldown
+                busy = self.llm_talks >= self.cfg.talk_budget
+                if llm_on and not self.llm_paused() and sources.get(nid) != "llm" and (cooling or busy):
+                    # Every line should be the LLM's: with no free LLM slot (or a recent
+                    # chat) the NPC does something else instead of saying a canned line.
+                    # (If the LLM is down altogether, canned lines are the fallback.)
+                    avoid = frozenset({"interact", "goto_npc", "build"})
+                    choices[nid] = (self.reflex.pick_action(views[nid], avoid), 0)
+                    sources[nid] = "reflex"
+                    self._commit_plan(views[nid], views[nid].actions[choices[nid][0]])
+                    continue
                 del choices[nid]
-                use_llm = self.reflex is not self.brain and self.llm_talks < self.cfg.talk_budget
+                self.last_talk[nid] = now
+                use_llm = llm_on
                 self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex"), use_llm), "interact")
+                self.listening_to[nid] = act["target"]
                 if use_llm:  # released when the task ends, even if it is cancelled before it starts
                     self.llm_talks += 1
                     self.pending[nid].add_done_callback(self._talk_done)
@@ -357,17 +384,29 @@ class Simulation:
             return {"type": "act", "action": {"kind": "sleep"}, "source": source}
         recalled = await self._recall(nid, other.id)
         news = list(self.news)
-        ix = Interaction(me, other, act["options"], [m.text for m in recalled],
+        # Courtship: a family is only on the table once both sides are fond of each other.
+        fond = min(self.memory.grudge(nid, other.id), self.memory.grudge(other.id, nid))
+        options = [o for o in act["options"] if o != "mate" or fond >= self.cfg.courtship]
+        ix = Interaction(me, other, options, [m.text for m in recalled],
                          self.memory.grudge(nid, other.id), news)
         brain = self.brain if use_llm and not self.llm_paused() else self.reflex
+        if brain is not self.reflex and "mate" in options:
+            # Instinct decides about family, the LLM still writes every word. bonsai-2:2b chose
+            # "mate" for 1 of 18 offers and refused 21 of 27 proposals, so LLM villages had no
+            # children and died of old age. When the heuristic would propose, the LLM words a
+            # proposal; whether the partner accepts is the heuristic's call (below).
+            instinct, _ = await self.reflex.choose_interaction(ix)
+            if instinct == "mate":
+                ix.options = ["mate"]
         option, said = await brain.choose_interaction(ix)
         said_llm = not isinstance(said, Canned)  # the LLM brain hands back a Canned line when it fails
         said = clamp_words(said)
         their = await self._recall(other.id, nid)
-        rev = Interaction(other, me, act["options"], [m.text for m in their],
+        rev = Interaction(other, me, options, [m.text for m in their],
                           self.memory.grudge(other.id, nid), news)
         context = option
-        if option in ("trade", "mate") and not await brain.consent(rev, option, said):
+        judge = self.reflex if option == "mate" else brain
+        if option in ("trade", "mate") and not await judge.consent(rev, option, said):
             self.memory.log(Memory(nid, other.id, self.state["tick"], "refused",
                                    f"{other.name} refused to {option} with me.", -1))
             context, option = f"refused_{option}", "talk"
@@ -375,6 +414,9 @@ class Simulation:
         replier = brain if hasattr(brain, "reply") else self.reflex
         reply = await replier.reply(rev, said, context)
         reply_llm = not isinstance(reply, Canned)
+        if brain is not self.reflex:  # an LLM conversation whose call failed stays silent, never canned
+            said = said if said_llm else ""
+            reply = reply if reply_llm else ""
         return {"type": "interact", "action": act, "option": option, "source": source,
                 "line": {"npc": nid, "target": other.id, "text": said, "reply": clamp_words(reply),
                          "llm": said_llm, "reply_llm": reply_llm}}
@@ -453,8 +495,12 @@ class Simulation:
                 said = lines.get(a, {}).get("text", "")
                 reply = lines.get(a, {}).get("reply")
                 b = e["target"]
-                self._remember(a, b, tick, "talk", f'I told {nm(b)}: "{said}"', 1)
-                self._remember(b, a, tick, "talk", f'{nm(a)} told me: "{said}"', 1)
+                if said:
+                    self._remember(a, b, tick, "talk", f'I told {nm(b)}: "{said}"', 1)
+                    self._remember(b, a, tick, "talk", f'{nm(a)} told me: "{said}"', 1)
+                else:  # a silent exchange (the LLM call failed) still counts as time spent together
+                    self._remember(a, b, tick, "talk", f"I sat with {nm(b)} for a while.", 1)
+                    self._remember(b, a, tick, "talk", f"{nm(a)} sat with me for a while.", 1)
                 if reply:
                     self._remember(a, b, tick, "talk", f'{nm(b)} answered me: "{reply}"', 0)
                     self._remember(b, a, tick, "talk", f'I answered {nm(a)}: "{reply}"', 0)
@@ -612,7 +658,7 @@ class Simulation:
 
         dialogue = []
         for d in lines.values():
-            if d:
+            if d and d.get("text"):
                 dialogue.append({"npc": d["npc"], "target": d["target"], "text": d["text"], "tick": tick,
                                  "kind": d["option"], "llm": d.get("llm", False)})
                 if d.get("reply"):
@@ -622,6 +668,8 @@ class Simulation:
         frame = {
             "type": "frame", "tick": tick, "width": self.state["width"], "height": self.state["height"],
             "tiles": self.state["tiles"], "npcs": npcs, "dialogue": dialogue, "log": log_lines,
+            # this tick's engine events, so the front end can animate swings, hits, chops...
+            "fx": [e for e in self.state["events"] if e["type"] in FX_EVENTS],
             "stats": {"population": len(self.alive()), "memories": self.memory.count(),
                       "max_generation": max((m.generation for m in self.meta.values()), default=0),
                       "decisions": dict(self.decision_stats),

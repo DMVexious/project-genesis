@@ -152,7 +152,7 @@ The orchestrator starts `ollama serve` if it isn't running, pre-loads the model
 at launch (the first cold load can take about a minute), then each NPC call takes about 0.5 s.
 
 ```
---model llama3.2:1b          # default (fastest); bonsai-2:2b is ~2x slower but more in character
+--model bonsai-2:2b          # default (more in character); llama3.2:1b is ~2x faster
                              # or set GENESIS_MODEL (works for the desktop app too)
 --brain ollama               # force Ollama;  --ollama-url to point elsewhere
 ```
@@ -246,11 +246,15 @@ Times below are in units of world time (one unit every `decay_every` = 3 ticks).
 * **Life cycle:** children grow up at age 60; from age 700 an elder may die of old age at any unit
   (chance (age − 700) / 40000 per unit, so most die between ~800 and ~1000). Elders cannot have children.
   At the default 150 ms/tick, an NPC lives roughly 5–7 minutes.
-* Mate: both adults and not elders, social urge ≥ 60 each, fed, healthy, nobody else within 1 tile,
-  population < 30, and neither parent had a child in the last 300 units of world time (~2 minutes).
+* Mate: both adults and not elders, social urge ≥ 30 each, fed, healthy, nobody else within 1 tile,
+  population < 30, and neither parent had a child in the last 100 units of world time (~45 s).
   Talking lowers the urge by 5, mating resets it to 0.
 * Courtship (orchestrator): "mate" is only offered once both NPCs are fond of each other
-  (affection ≥ 3 each way, i.e. several friendly exchanges), and the partner must still consent.
+  (affection ≥ 2 each way, i.e. a couple of friendly exchanges), and the partner must still consent.
+* Instinct (orchestrator): small models almost never start a family on their own (bonsai-2:2b chose
+  "mate" for 1 in 18 offers and refused 21 of 27 proposals, so LLM villages died out). When "mate" is
+  on offer, the heuristic decides whether to propose and whether the partner accepts; the LLM still
+  writes the proposal and the reply. Trades stay fully LLM-decided.
 * In heuristic runs of 12,000 ticks, 5 of 6 seeds held a stable population (20+ generations);
   one collapsed after a run of fights.
 

@@ -155,7 +155,8 @@ def _situation(ix: Interaction) -> dict:
         them["rumour_about_them"] = f"they {belief_text(ix.other.persona)}"
     return {
         "you": {"health": ix.me.stats["health"], "fullness": ix.me.stats["hunger"],
-                "food": ix.me.stats["food"], "wood": ix.me.stats["wood"]},
+                "food": ix.me.stats["food"], "wood": ix.me.stats["wood"],
+                "social_urge": ix.me.stats["social"]},
         "them": them,
         "your_memories_of_them": ix.memories or ["You have never spoken."],
         "village_news": ix.news[-3:] or ["Nothing has happened yet."],
@@ -163,8 +164,19 @@ def _situation(ix: Interaction) -> dict:
     }
 
 
+# What each interaction option means, shown to the model next to the bare option name.
+# Without these, small models only ever pick "talk" or "fight": a bare "mate" never got chosen,
+# so LLM-driven villages had no births and died out of old age.
+OPTION_MEANING = {
+    "talk": "just talk",
+    "fight": "attack them",
+    "trade": "offer to swap your food and wood",
+    "mate": "ask them to start a family with you (you are fond of each other; a child carries on your line)",
+}
+
+
 def interaction_prompt(ix: Interaction) -> list[dict]:
-    payload = {**_situation(ix), "options": ix.options}
+    payload = {**_situation(ix), "options": {o: OPTION_MEANING.get(o, o) for o in ix.options}}
     return [
         {"role": "system", "content": dialogue_system_prompt(ix.me)},
         {"role": "user", "content": json.dumps(payload) +
@@ -649,7 +661,7 @@ class OllamaBrain(LlamaBrain):
 
 
 async def make_brain(kind: str, url: str, seed: int, ollama_url: str = "http://127.0.0.1:11434",
-                     model: str = "llama3.2:1b"):
+                     model: str = "bonsai-2:2b"):
     """kind: 'auto' (llama.cpp if up, else Ollama if it has `model`, else heuristic),
     'llm' (llama.cpp), 'ollama', or 'heuristic'."""
     heuristic = HeuristicBrain(seed)

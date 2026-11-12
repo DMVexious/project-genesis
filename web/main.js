@@ -51,7 +51,7 @@
 
   const $ = (id) => document.getElementById(id);
   const overlay = $("overlay");
-  if (params.has("bare")) $("panel").hidden = true;  // ?bare=1: world only (screenshots, recordings)
+  if (params.has("bare")) $("panel").hidden = $("timeline").hidden = true;  // ?bare=1: world only (screenshots, recordings)
 
   const state = {
     frame: null,
@@ -67,6 +67,10 @@
     fires: [],          // campfire tile images (animated)
     portraits: new Map(),
     ws: null,
+    latest: null,       // newest frame from the server (state.frame is the one on screen)
+    history: [],        // recorded frames for replay, oldest first
+    interned: new Map(),// npc id -> last copies of its unchanging fields (shared between frames)
+    replay: null,       // { idx, dir: -1|0|1, speed, timer } while watching the past
   };
 
   // --- procedural pixel-art textures ---------------------------------------
@@ -419,10 +423,10 @@
   const stageOf = (n) => n.stage || (n.age < 60 ? "child" : "adult");
   const scaleFor = (stage) => (stage === "child" ? NPC_SCALE * 0.7 : NPC_SCALE);
 
-  function addGrave(sc, n, tick) {
+  function addGrave(sc, n, tick, instant = false) {
     const img = sc.add.image(n.x * TILE + TILE / 2, n.y * TILE + TILE, "grave")
-      .setOrigin(0.5, 1).setDepth(n.y * TILE + TILE - 3).setAlpha(0);
-    sc.tweens.add({ targets: img, alpha: 1, delay: 900, duration: 600 });
+      .setOrigin(0.5, 1).setDepth(n.y * TILE + TILE - 3).setAlpha(instant ? 1 : 0);
+    if (!instant) sc.tweens.add({ targets: img, alpha: 1, delay: 900, duration: 600 });
     state.graves.push({ img, tick });
     while (state.graves.length > MAX_GRAVES) state.graves.shift().img.destroy();
   }
@@ -435,9 +439,10 @@
     });
   }
 
-  function renderNpcs(sc, f) {
+  function renderNpcs(sc, f, opts = {}) {
     const seen = new Set();
     for (const n of f.npcs) {
+      if (opts.reverse && !n.alive) continue;  // played backwards, the dead simply vanish
       seen.add(n.id);
       state.names.set(n.id, n.name);
       let s = state.sprites.get(n.id);
@@ -454,22 +459,31 @@
         tag.className = "npc-tag";
         tag.innerHTML = '<span class="status"></span><span class="action"></span>';
         overlay.appendChild(tag);
-        s = { sprite, shadow, spear, tag, statusEl: tag.children[0], actionEl: tag.children[1], dying: false, key };
+        s = { sprite, shadow, spear, tag, statusEl: tag.children[0], actionEl: tag.children[1], dying: false, key,
+              pos: { x: p.x, y: p.y },  // where the NPC stands (tweened while walking)
+              fx: newFx(),              // animation offsets layered on top (see anim section)
+              base: scaleFor(stage), face: 1, phase: (n.id * 1.7) % (Math.PI * 2), nextZ: 0 };
         state.sprites.set(n.id, s);
       } else if (!s.dying && (s.tx !== p.x || s.ty !== p.y)) {
         // Walk at this NPC's own speed: the step lasts as long as its action does.
         if (s.tween) s.tween.stop();
-        const ticks = n.dur || 2;
-        s.tween = sc.tweens.add({ targets: s.sprite, x: p.x, y: p.y, ease: "Linear",
-          duration: Math.max(120, ticks * state.tickMs * 0.95) });
-        // a little bob so walkers don't glide
-        sc.tweens.add({ targets: s.sprite, scaleY: { from: s.sprite.scaleX * 0.92, to: s.sprite.scaleX },
-          duration: Math.max(120, ticks * state.tickMs * 0.45), yoyo: true });
+        const ticks = opts.reverse ? 1 : n.dur || 2;
+        const ms = Math.max(opts.tickMs ? 30 : 120, ticks * (opts.tickMs || state.tickMs) * 0.95);
+        if (p.x !== s.tx) s.face = p.x < s.tx ? -1 : 1;
+        s.tween = sc.tweens.add({ targets: s.pos, x: p.x, y: p.y, ease: "Linear", duration: ms });
+        // hop and waddle so walkers don't glide
+        const steps = Math.max(1, Math.round(ms / 220));
+        sc.tweens.add({ targets: s.fx, walkY: { from: 0, to: -2.5 }, walkA: { from: -4, to: 4 }, ease: "Sine.inOut",
+          duration: ms / steps / 2, yoyo: true, repeat: steps - 1,
+          onComplete: () => { s.fx.walkY = 0; s.fx.walkA = 0; } });
       }
       if (s.key !== key && !s.dying) { // grew up, or grew old
         s.key = key;
-        s.sprite.setTexture(key).setScale(scaleFor(stage));
+        s.base = scaleFor(stage);
+        s.sprite.setTexture(key);
+        anim(sc, s, { sx: { from: 1.25, to: 1 }, sy: { from: 0.8, to: 1 } }, 420, { ease: "Back.out" });
       }
+      s.sleeping = n.alive && n.status === "💤";
       s.tx = p.x; s.ty = p.y;
       s.sprite.setDepth(p.y);
       s.spear.setVisible(!!n.spear && n.alive);
@@ -488,13 +502,214 @@
         s.spear.setVisible(false);
         addGrave(sc, n, f.tick);
         sc.tweens.add({ targets: [s.sprite, s.shadow], alpha: 0, delay: 600, duration: 900 });
-        sc.tweens.add({ targets: s.sprite, angle: 90, delay: 600, duration: 900, onComplete: () => removeNpc(n.id) });
+        sc.tweens.add({ targets: s.fx, angle: 90 * s.face, delay: 600, duration: 700, ease: "Bounce.out",
+          onComplete: () => { if (state.sprites.get(n.id) === s) removeNpc(n.id); } });
       }
     }
     for (const id of [...state.sprites.keys()]) {
-      if (!seen.has(id) && !state.sprites.get(id).dying) removeNpc(id);
+      if (!seen.has(id) && (opts.reverse || !state.sprites.get(id).dying)) removeNpc(id);
     }
     ageGraves(sc, f.tick);
+  }
+
+  // --- animations -----------------------------------------------------------------
+  // Each sprite stands at s.pos (tweened while walking). s.fx holds offsets that
+  // short animations tween; every tween goes {from: rest} and yoyos back, so
+  // several can stack (walk + lunge + recoil) and always settle at rest.
+  const newFx = () => ({ x: 0, y: 0, angle: 0, sx: 1, sy: 1, swing: 0, walkY: 0, walkA: 0 });
+  const reduceMotion = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  function anim(sc, s, props, duration, opts = {}) {
+    return sc.tweens.add({ targets: s.fx, ...props, duration, yoyo: !!opts.yoyo, repeat: opts.repeat || 0,
+      delay: opts.delay || 0, ease: opts.ease || "Quad.out", onComplete: opts.onComplete });
+  }
+
+  // Applied every frame: position + animation offsets + idle breathing.
+  function poseSprite(sc, s, now) {
+    const fx = s.fx, sp = s.sprite;
+    const breath = s.dying || reduceMotion ? 0
+      : s.sleeping ? 0.045 * Math.sin(now / 650 + s.phase)   // slow, deep breaths while asleep
+      : 0.018 * Math.sin(now / 420 + s.phase);
+    sp.setPosition(s.pos.x + fx.x, s.pos.y + fx.y + fx.walkY)
+      .setScale(s.base * fx.sx * (1 - breath * 0.4), s.base * fx.sy * (1 + breath))
+      .setAngle(fx.angle + fx.walkA)
+      .setFlipX(s.face < 0);
+    if (s.sleeping && !reduceMotion && now > s.nextZ) {
+      s.nextZ = now + 1100;
+      if (sc.cameras.main.worldView.contains(sp.x, sp.y))
+        floatText(sc, sp.x + 6 * s.face, sp.y - sp.displayHeight, "z", "#9fd3ff",
+          { size: 9, rise: 16, dx: 7 * s.face, dur: 1500 });
+    }
+  }
+
+  function flash(sc, s, delay) {
+    const restore = () => { if (s.sprite.active) s.dying ? s.sprite.setTint(0x777777) : s.sprite.clearTint(); };
+    sc.time.delayedCall(delay, () => {
+      if (!s.sprite.active) return;
+      s.sprite.setTintFill(0xffffff);
+      sc.time.delayedCall(70, () => {
+        if (!s.sprite.active) return;
+        s.sprite.clearTint().setTint(0xff7a6a);
+        sc.time.delayedCall(120, restore);
+      });
+    });
+  }
+
+  function floatText(sc, x, y, text, color, { size = 11, delay = 0, rise = 18, dx = 0, dur = 900, pop = false } = {}) {
+    const t = sc.add.text(x, y, text, { fontFamily: "monospace", fontStyle: "bold", fontSize: `${size}px`, color,
+      stroke: "#140e09", strokeThickness: 3 }).setOrigin(0.5, 1).setDepth(20000).setResolution(3).setVisible(false);
+    sc.tweens.add({ targets: t, x: x + dx, y: y - rise, delay, duration: dur, ease: "Cubic.out",
+      onStart: () => t.setVisible(true) });
+    if (pop) sc.tweens.add({ targets: t, scale: { from: 1.8, to: 1 }, delay, duration: 220, ease: "Back.out" });
+    sc.tweens.add({ targets: t, alpha: 0, delay: delay + dur * 0.6, duration: dur * 0.4, onComplete: () => t.destroy() });
+  }
+
+  // Little square particles thrown up and pulled down by gravity.
+  function burst(sc, x, y, colors, n, { spread = 12, up = 12, size = 2, dur = 500, gravity = 36, delay = 0 } = {}) {
+    for (let i = 0; i < n; i++) {
+      const r = sc.add.rectangle(x, y, size, size, colors[i % colors.length]).setDepth(y + 40).setVisible(false);
+      const vx = (Math.random() - 0.5) * spread * 2, vy = -(0.4 + Math.random() * 0.6) * up;
+      const p = { t: 0 };
+      sc.tweens.add({ targets: p, t: 1, delay, duration: dur * (0.7 + Math.random() * 0.6),
+        onStart: () => r.setVisible(true),
+        onUpdate: () => r.setPosition(x + vx * p.t, y + vy * p.t + gravity * p.t * p.t).setAlpha(1 - p.t * p.t),
+        onComplete: () => r.destroy() });
+    }
+  }
+
+  // A white arc that sweeps across the target.
+  function slash(sc, x, y, face, delay) {
+    const g = sc.add.graphics({ x, y }).setDepth(20000).setVisible(false);
+    g.lineStyle(2, 0xffffff, 1); g.beginPath(); g.arc(0, 0, 10, -2.4, -0.3); g.strokePath();
+    g.lineStyle(1, 0xffd27a, 1); g.beginPath(); g.arc(0, 0, 7, -2.2, -0.5); g.strokePath();
+    g.setScale(face, 1);
+    sc.tweens.add({ targets: g, angle: { from: -30 * face, to: 50 * face }, alpha: { from: 1, to: 0 }, delay,
+      duration: 230, ease: "Quad.out", onStart: () => g.setVisible(true), onComplete: () => g.destroy() });
+  }
+
+  function shakeTile(sc, x, y) {
+    const img = state.tiles[y] && state.tiles[y][x];
+    if (!img || img.getData("shaking")) return;
+    img.setData("shaking", true);
+    sc.tweens.add({ targets: img, x: { from: x * TILE - 1.5, to: x * TILE + 1.5 }, duration: 45, yoyo: true, repeat: 2,
+      onComplete: () => { img.x = x * TILE; img.setData("shaking", false); } });
+  }
+
+  const tileCenter = (x, y) => ({ x: x * TILE + TILE / 2, y: y * TILE + TILE / 2 });
+  const faceToward = (s, x) => { if (Math.abs(x - s.tx) > 2) s.face = x < s.tx ? -1 : 1; };
+
+  function playFx(sc, events) {
+    if (reduceMotion) return;
+    const get = (id) => { const s = state.sprites.get(id); return s && s.sprite.active ? s : null; };
+    const view = sc.cameras.main.worldView;
+    for (const e of events) {
+      const s = get(e.npc);
+      if (!s) continue;
+      if (!view.contains(s.tx, s.ty) && e.type !== "attack") continue;  // off screen: skip the show
+      const head = { x: s.tx, y: s.ty - 14 * s.base };
+      switch (e.type) {
+        case "attack": {
+          const b = get(e.target);
+          if (!b) break;
+          const delay = e.retaliation ? 320 : 0;
+          let dx = b.tx - s.tx, dy = b.ty - s.ty;
+          const len = Math.hypot(dx, dy);
+          if (len < 1) { dx = s.face; dy = 0; } else { dx /= len; dy /= len; }
+          faceToward(s, b.tx); faceToward(b, s.tx);
+          // attacker: lean back, then lunge in with a swing
+          anim(sc, s, { x: { from: 0, to: dx * 9 }, y: { from: 0, to: dy * 6 }, swing: { from: 0, to: 1 },
+                        angle: { from: 0, to: 12 * s.face } }, 110, { yoyo: true, delay, ease: "Quad.in" });
+          const at = delay + 110;
+          const hx = b.tx, hy = b.ty - 12 * b.base;
+          const side = dx >= 0 ? 1 : -1;
+          if (e.hit) {
+            const big = e.damage >= 20;  // spear hits
+            flash(sc, b, at);
+            anim(sc, b, { x: { from: 0, to: dx * (big ? 8 : 5) }, y: { from: 0, to: dy * 3 },
+                          angle: { from: 0, to: 14 * side }, sy: { from: 1, to: 0.9 } }, 90, { yoyo: true, delay: at });
+            slash(sc, hx, hy, side, at);
+            burst(sc, hx, hy, [0xd9534f, 0xff8a7a, 0xffffff], big ? 12 : 7, { delay: at, spread: 14, up: 12 });
+            floatText(sc, hx + dx * 4, hy - 8, `-${e.damage}`, big ? "#ffcf4a" : "#ff6a5a",
+                      { size: big ? 14 : 11, delay: at, dx: dx * 8, pop: big });
+            if (big && view.contains(hx, hy)) sc.time.delayedCall(at, () => sc.cameras.main.shake(140, 0.004));
+          } else {
+            // dodge: the target hops aside
+            anim(sc, b, { y: { from: 0, to: -7 }, x: { from: 0, to: dx * 4 } }, 120, { yoyo: true, delay: at - 40 });
+            floatText(sc, hx, hy - 8, "miss", "#c8c8d0", { size: 10, delay: at });
+          }
+          break;
+        }
+        case "chop": {
+          const c = tileCenter(e.x, e.y);
+          faceToward(s, c.x);
+          for (let i = 0; i < 2; i++) {
+            const d = i * 280;
+            anim(sc, s, { swing: { from: 0, to: 1 }, angle: { from: 0, to: 13 * s.face }, x: { from: 0, to: 3 * s.face } },
+                 100, { yoyo: true, delay: d, ease: "Quad.in" });
+            sc.time.delayedCall(d + 100, () => shakeTile(sc, e.x, e.y));
+            burst(sc, c.x, c.y + 3, [0xc89a62, 0x6d4825, 0x3d8a3a], 5, { delay: d + 100, spread: 12, up: 10 });
+          }
+          break;
+        }
+        case "forage": {
+          const c = tileCenter(e.x, e.y);
+          faceToward(s, c.x);
+          anim(sc, s, { sy: { from: 1, to: 0.82 }, sx: { from: 1, to: 1.1 } }, 140, { yoyo: true, repeat: 1 });
+          sc.time.delayedCall(140, () => shakeTile(sc, e.x, e.y));
+          burst(sc, c.x, c.y, [0xd23a4f, 0xff8a9a, 0x4c8f40], 6, { spread: 8, up: 14, delay: 140 });
+          break;
+        }
+        case "build": {
+          const c = tileCenter(e.x, e.y);
+          faceToward(s, c.x);
+          for (let i = 0; i < 3; i++) {
+            const d = i * 200;
+            anim(sc, s, { y: { from: 0, to: -3 }, swing: { from: 0, to: 0.7 }, angle: { from: 0, to: 9 * s.face } },
+                 90, { yoyo: true, delay: d });
+            burst(sc, c.x, c.y + 8, [0x9a8a78, 0xc8b89a, 0xe3c26a], 4, { delay: d + 90, spread: 14, up: 6, gravity: 10 });
+          }
+          break;
+        }
+        case "eat":
+          anim(sc, s, { sy: { from: 1, to: 0.93 }, y: { from: 0, to: 1 } }, 90, { yoyo: true, repeat: 3 });
+          burst(sc, head.x + 3 * s.face, head.y + 4, e.cooked ? [0xe0a458, 0xf6c04a] : [0xd23a4f, 0xff8a9a], 4,
+                { spread: 6, up: 4, delay: 90, size: 1 });
+          break;
+        case "craft":
+          anim(sc, s, { angle: { from: 0, to: 360 * s.face } }, 380,
+               { ease: "Cubic.inOut", onComplete: () => { s.fx.angle = 0; } });
+          burst(sc, head.x, head.y - 6, [0xffffff, 0xf6e27a, 0xcfcfd6], 10, { spread: 14, up: 16, delay: 380, gravity: 8 });
+          break;
+        case "talk":
+          anim(sc, s, { y: { from: 0, to: -3 } }, 110, { yoyo: true });
+          break;
+        case "trade": {
+          const b = get(e.target);
+          anim(sc, s, { y: { from: 0, to: -4 } }, 120, { yoyo: true });
+          if (b) {
+            anim(sc, b, { y: { from: 0, to: -4 } }, 120, { yoyo: true, delay: 140 });
+            burst(sc, (s.tx + b.tx) / 2, head.y, [0xf6c04a, 0xffe08a], 6, { spread: 8, up: 14, delay: 120 });
+          }
+          break;
+        }
+        case "birth": {
+          anim(sc, s, { sx: { from: 0.1, to: 1 }, sy: { from: 0.1, to: 1 } }, 520, { ease: "Back.out" });
+          for (const pid of e.parents || []) {
+            const p = get(pid);
+            if (!p) continue;
+            for (let i = 0; i < 3; i++)
+              floatText(sc, p.tx + (i - 1) * 5, p.ty - 22 * p.base, "♥", "#ff7ab0",
+                        { size: 10, delay: i * 180, rise: 20, dx: (i - 1) * 4, dur: 1100 });
+          }
+          break;
+        }
+        case "death":
+          // dust when the body lands (see the fall in renderNpcs)
+          burst(sc, s.tx + 8 * s.face, s.ty - 2, [0x9a8a78, 0x7a6a58], 8, { delay: 1150, spread: 14, up: 5, gravity: 6, dur: 700 });
+          break;
+        default: break;
+      }
+    }
   }
 
   function removeNpc(id) {
@@ -547,10 +762,16 @@
     const view = cam.worldView;
     const toScreen = (x, y) => [c.left - o.left + (x - view.x) * cam.zoom * k,
                                 c.top - o.top + (y - view.y) * cam.zoom * k];
+    const now = sc.time.now;
     for (const [id, s] of state.sprites) {
       const sp = s.sprite;
-      s.shadow.setPosition(sp.x, sp.y - 1).setScale(sp.scaleX).setDepth(sp.depth - 0.6);
-      if (s.spear.visible) s.spear.setPosition(sp.x + 9 * sp.scaleX, sp.y - 1).setScale(sp.scaleX).setDepth(sp.depth + 0.1);
+      poseSprite(sc, s, now);
+      s.shadow.setPosition(s.pos.x + s.fx.x, s.pos.y - 1).setScale(s.base * s.fx.sx).setDepth(sp.depth - 0.6);
+      if (s.spear.visible) {
+        const swing = s.fx.swing * 75;  // a jab/slash rotates the spear forward
+        s.spear.setPosition(sp.x + 9 * s.base * s.face, sp.y - 1 - s.fx.swing * 3).setScale(s.base)
+          .setFlipX(s.face < 0).setAngle((16 + swing) * s.face).setDepth(sp.depth + 0.1);
+      }
       const [x, y] = toScreen(sp.x, sp.y - sp.displayHeight - 2);
       const visible = x > -40 && y > -40 && x < c.width + 40 && y < c.height + 80;
       s.tag.style.display = visible ? "" : "none";
@@ -572,12 +793,21 @@
     if (home) sc.homeMark.setPosition(home[0] * TILE, home[1] * TILE);
   }
 
-  function render(f) {
+  // opts (replay only): snap = jumped here, draw without effects; reverse = playing
+  // backwards (no effects, speech or deaths); tickMs = how long each frame is shown.
+  function render(f, opts = {}) {
     const sc = scene();
     if (!sc || !sc.sys.isActive() || !sc.ring) return;
     renderTiles(sc, f);
-    renderNpcs(sc, f);
-    renderBubbles(f);
+    if (opts.reverse) {
+      state.graves = state.graves.filter((gr) => gr.tick <= f.tick || (gr.img.destroy(), false));
+      clearBubbles();
+    }
+    renderNpcs(sc, f, opts);
+    if (!opts.reverse && !opts.snap) {
+      playFx(sc, f.fx || []);
+      renderBubbles(f);
+    }
   }
 
   // --- side panel ------------------------------------------------------------------
@@ -641,6 +871,19 @@
         <div class="intent">${sel.alive ? "▶ " + esc(sel.intent || "…") + (SOURCE_LABEL[sel.source] || "") : "died: " + esc(sel.cause)}</div>`;
     }
 
+    renderFeeds(f);
+    if (sel) {
+      const mine = state.talks.filter((t) => t.a === sel.id || t.b === sel.id).slice(0, 4);
+      det.insertAdjacentHTML("beforeend", `<div class="sub">Recent conversations</div>` +
+        (mine.length ? `<ol class="talks">${mine.map(talkHtml).join("")}</ol>` : `<div class="hint">Hasn't spoken to anyone yet.</div>`));
+    }
+
+    $("banner").hidden = s.population > 0;
+    $("banner").textContent = "Extinction. Start a new world →";
+  }
+
+  // New lines for the Conversations feed and the Chronicle (kept live during replay too).
+  function renderFeeds(f) {
     if (f.dialogue.length) {
       for (const d of f.dialogue) {
         if (d.reply) continue;
@@ -651,12 +894,6 @@
       state.talks.length = Math.min(state.talks.length, MAX_TALKS);
       renderTalks();
     }
-    if (sel) {
-      const mine = state.talks.filter((t) => t.a === sel.id || t.b === sel.id).slice(0, 4);
-      det.insertAdjacentHTML("beforeend", `<div class="sub">Recent conversations</div>` +
-        (mine.length ? `<ol class="talks">${mine.map(talkHtml).join("")}</ol>` : `<div class="hint">Hasn't spoken to anyone yet.</div>`));
-    }
-
     const log = $("log");
     const items = [];
     for (const line of f.log.filter((l) => !l.includes(" talks to "))) items.push(`<li><b>${f.tick}</b>${esc(line)}</li>`);
@@ -664,9 +901,6 @@
       log.insertAdjacentHTML("afterbegin", items.reverse().join(""));
       while (log.children.length > 150) log.lastChild.remove();
     }
-
-    $("banner").hidden = s.population > 0;
-    $("banner").textContent = "Extinction. Start a new world →";
   }
 
   const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", mate: "💞" };
@@ -725,10 +959,18 @@
         $("speed-val").textContent = `${msg.tick_ms} ms/tick`;
         if (document.activeElement !== $("seed")) $("seed").value = msg.seed;
       } else if (msg.type === "frame") {
-        if (state.frame && msg.tick < state.frame.tick) resetView();
+        if (state.latest && msg.tick < state.latest.tick) resetView();  // new world
+        record(msg);
+        state.latest = msg;
+        if (state.replay) {  // keep recording and feeding the panel; the world view stays in the past
+          renderFeeds(msg);
+          updateTimeline();
+          return;
+        }
         state.frame = msg;
         render(msg);
         renderPanel(msg);
+        updateTimeline();
         if (params.has("follow") && state.selected === null && !state.followed) {  // ?follow=<npc id>
           state.followed = true;
           select(Number(params.get("follow")));
@@ -737,18 +979,183 @@
     };
   }
 
-  function resetView() {
-    for (const id of [...state.sprites.keys()]) removeNpc(id);
+  function clearBubbles() {
     for (const b of state.bubbles.values()) b.el.remove();
     state.bubbles.clear();
+  }
+
+  // Sprites, speech and graves only (the panel feeds are left alone).
+  function clearWorld() {
+    for (const id of [...state.sprites.keys()]) removeNpc(id);
+    clearBubbles();
     for (const gr of state.graves) gr.img.destroy();
     state.graves = [];
+  }
+
+  function resetView() {
+    stopReplay();
+    state.history = [];
+    state.interned.clear();
+    clearWorld();
     state.names.clear();
     state.selected = null;
     state.talks = [];
     renderTalks();
     $("log").innerHTML = "";
   }
+
+  // --- replay ------------------------------------------------------------------------
+  // Every frame is recorded here, so the viewer can scrub back through recent
+  // history while the live world keeps running. Frames repeat most of their data
+  // tick to tick, so unchanged parts are shared with the previous frame.
+  const MAX_HISTORY = 4000;  // ~10 minutes at 150 ms/tick
+  const SHARED = ["traits", "look", "parents", "mutated"];
+
+  function record(f) {
+    const prev = state.history[state.history.length - 1];
+    if (prev && prev.tiles.length === f.tiles.length) {
+      const rows = f.tiles.map((r, i) => (r === prev.tiles[i] ? prev.tiles[i] : r));
+      f.tiles = rows.every((r, i) => r === prev.tiles[i]) ? prev.tiles : rows;
+    }
+    for (const n of f.npcs) {
+      let c = state.interned.get(n.id);
+      if (!c) state.interned.set(n.id, (c = {}));
+      for (const k of SHARED) {
+        const sig = JSON.stringify(n[k]);
+        if (c[k + "$"] === sig) n[k] = c[k];
+        else { c[k] = n[k]; c[k + "$"] = sig; }
+      }
+      for (const k of ["name", "belief", "voice", "intent", "cause"]) {
+        if (c[k] === n[k]) n[k] = c[k]; else c[k] = n[k];
+      }
+    }
+    state.history.push(f);
+    if (state.history.length > MAX_HISTORY) {
+      state.history.splice(0, state.history.length - MAX_HISTORY);
+      if (state.replay && --state.replay.idx < 0) seek(0);  // the oldest frame we were on fell off
+    }
+  }
+
+  const rp = () => state.replay;
+
+  function enterReplay() {
+    if (state.replay || !state.history.length) return;
+    state.replay = { idx: state.history.length - 1, dir: 0, speed: Number($("tl-speed").value) || 1, timer: 0 };
+    document.body.classList.add("replaying");
+  }
+
+  function stopReplay() {
+    if (!state.replay) return;
+    clearTimeout(state.replay.timer);
+    state.replay = null;
+    document.body.classList.remove("replaying");
+  }
+
+  function refollow() {
+    const sc = scene(), s = state.sprites.get(state.selected);
+    if (sc && sc.cameras && s) sc.cameras.main.startFollow(s.sprite, true, 0.08, 0.08);
+  }
+
+  function showFrame(f, opts) {
+    state.frame = f;
+    render(f, opts);
+    renderPanel({ ...f, dialogue: [], log: [] });  // don't replay old lines into the feeds
+    updateTimeline();
+  }
+
+  // Jump straight to a frame: rebuild the world as it stood then.
+  function seek(idx) {
+    const h = state.history;
+    if (!h.length) return;
+    enterReplay();
+    idx = Math.max(0, Math.min(h.length - 1, idx));
+    state.replay.idx = idx;
+    const f = h[idx], sc = scene();
+    clearWorld();
+    if (sc && sc.ring) {  // graves of anyone who died in the minute before
+      for (let i = idx - 1; i >= 0 && h[i].tick > f.tick - GRAVE_TICKS; i--)
+        for (const n of h[i].npcs) if (!n.alive) addGrave(sc, n, h[i].tick, true);
+    }
+    showFrame(f, { snap: true });
+    refollow();
+  }
+
+  // Move one frame, animating it like the live view would.
+  function step(dir) {
+    enterReplay();
+    const r = state.replay, next = r.idx + dir;
+    if (next >= state.history.length) return goLive();
+    if (next < 0) return setDir(0);
+    r.idx = next;
+    showFrame(state.history[next], { reverse: dir < 0, tickMs: frameMs() });
+  }
+
+  const frameMs = () => Math.max(16, state.tickMs / (rp() ? rp().speed : 1));
+
+  function setDir(dir) {
+    enterReplay();
+    const r = state.replay;
+    if (!r) return;
+    clearTimeout(r.timer);
+    r.dir = dir;
+    const tick = () => {
+      if (state.replay !== r || !r.dir) return;
+      step(r.dir);
+      if (state.replay === r && r.dir) r.timer = setTimeout(tick, frameMs());
+    };
+    if (dir) r.timer = setTimeout(tick, 0);
+    updateTimeline();
+  }
+
+  function goLive() {
+    stopReplay();
+    const f = state.latest;
+    if (!f) return;
+    clearWorld();
+    state.frame = f;
+    const sc = scene(), h = state.history;
+    if (sc && sc.ring)
+      for (let i = h.length - 2; i >= 0 && h[i].tick > f.tick - GRAVE_TICKS; i--)
+        for (const n of h[i].npcs) if (!n.alive) addGrave(sc, n, h[i].tick, true);
+    render(f, { snap: true });
+    renderPanel({ ...f, dialogue: [], log: [] });
+    refollow();
+    updateTimeline();
+  }
+
+  function updateTimeline() {
+    const h = state.history, r = state.replay;
+    const scrub = $("tl-scrub");
+    scrub.max = Math.max(0, h.length - 1);
+    if (document.activeElement !== scrub || !r) scrub.value = r ? r.idx : h.length - 1;
+    const live = state.latest ? state.latest.tick : 0;
+    const at = r && h[r.idx] ? h[r.idx].tick : live;
+    $("tl-tick").textContent = r ? `tick ${at} · ${live - at} behind` : `tick ${live}`;
+    $("tl-play").textContent = r && r.dir === 1 ? "⏸" : "▶";
+    $("tl-rev").textContent = r && r.dir === -1 ? "⏸" : "◀◀";
+  }
+
+  $("tl-scrub").oninput = (e) => {
+    const idx = Number(e.target.value);
+    if (state.replay) setDir(0);
+    seek(idx);
+  };
+  $("tl-scrub").onchange = (e) => { if (Number(e.target.value) >= state.history.length - 1) goLive(); };
+  $("tl-play").onclick = () => setDir(rp() && rp().dir === 1 ? 0 : 1);
+  $("tl-rev").onclick = () => setDir(rp() && rp().dir === -1 ? 0 : -1);
+  $("tl-back").onclick = () => { setDir(0); step(-1); };
+  $("tl-fwd").onclick = () => { if (!rp()) return; setDir(0); step(1); };
+  $("tl-live").onclick = goLive;
+  $("tl-speed").onchange = (e) => { if (rp()) rp().speed = Number(e.target.value) || 1; };
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (e.key === "," || e.key === "<") {
+      e.preventDefault();
+      if (e.shiftKey || e.key === "<") $("tl-rev").click(); else $("tl-back").click();
+    } else if (e.key === ".") { e.preventDefault(); $("tl-fwd").click(); }
+    else if (e.key === "Enter" && rp()) { e.preventDefault(); $("tl-play").click(); }
+    else if (e.key === "Escape" && rp()) { e.preventDefault(); goLive(); }
+  });
 
   $("btn-pause").onclick = () => send({ cmd: state.paused ? "resume" : "pause" });
   $("btn-step").onclick = () => send({ cmd: "step" });

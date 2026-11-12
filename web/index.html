@@ -12,6 +12,20 @@
       <div id="game"></div>
       <div id="overlay" aria-hidden="true"></div>
       <div id="banner" hidden></div>
+      <div id="timeline" title="Replay: the page records recent ticks. The live world keeps running while you watch.">
+        <span id="tl-badge">⏪ REPLAY</span>
+        <button id="tl-rev" title="Play backwards (shift+,)">◀◀</button>
+        <button id="tl-back" title="Step back one tick (,)">⏴</button>
+        <button id="tl-play" title="Play / pause the replay (enter)">▶</button>
+        <button id="tl-fwd" title="Step forward one tick (.)">⏵</button>
+        <select id="tl-speed" title="Replay speed">
+          <option value="0.5">½×</option><option value="1" selected>1×</option>
+          <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option>
+        </select>
+        <input id="tl-scrub" type="range" min="0" max="0" value="0" aria-label="Timeline">
+        <span id="tl-tick"></span>
+        <button id="tl-live" title="Back to the live world (esc)">● LIVE</button>
+      </div>
     </section>
 
     <aside id="panel">

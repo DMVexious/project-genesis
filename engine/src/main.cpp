@@ -48,13 +48,14 @@ constexpr int TREE_REGROW = 60;
 constexpr int BUSH_REGROW = 40;
 constexpr int MATURE_AGE = 60;
 constexpr int START_AGE = 100;
-constexpr int POP_CAP = 40;
+constexpr int POP_CAP = 30;
 constexpr int SIGHT = 20;
 constexpr int GOTO_LIMIT = 60;
 constexpr int BUILD_SEARCH = 6;
 constexpr size_t MAX_TARGETS = 3;
 constexpr int TALK_SOCIAL = 5;
 constexpr int MATE_SOCIAL = 30;
+constexpr int MATE_COOLDOWN = 100;      // world-time units a parent rests before another child
 constexpr int MATE_PRIVACY = 1;        // nobody else may be this close when two NPCs mate
 constexpr int FARM_FOOD = 3;
 constexpr int FARM_REGROW = 25;
@@ -112,6 +113,7 @@ struct Json {
 struct Npc {
     int id, x, y, health, hunger, energy, social;
     int wood = 0, food = 0, spear = 0, age;
+    int rest = 0;  // mating cooldown, counts down in world time
     bool alive = true, asleep = false;
     std::string cause;
 };
@@ -230,6 +232,7 @@ public:
             n.hunger = clamp0(n.hunger - 1);
             n.social = std::min(STAT_MAX, n.social + 1);
             n.age += 1;
+            n.rest = std::max(0, n.rest - 1);
             if (phase % 2 == 0) n.energy = clamp0(n.energy - 1);
             if (n.hunger == 0 || n.energy == 0) {
                 if (n.hunger == 0) n.health = clamp0(n.health - 3);
@@ -428,7 +431,7 @@ private:
 
     bool mateOk(const Npc& a, const Npc& b) const {
         if (a.age < MATURE_AGE || b.age < MATURE_AGE || a.age >= ELDER_AGE || b.age >= ELDER_AGE) return false;
-        if (a.social < MATE_SOCIAL || b.social < MATE_SOCIAL) return false;
+        if (a.social < MATE_SOCIAL || b.social < MATE_SOCIAL || a.rest > 0 || b.rest > 0) return false;
         if (a.hunger < 40 || b.hunger < 40 || a.health < 50 || b.health < 50) return false;
         if (aliveCount() >= POP_CAP) return false;
         for (const auto& o : npcs_)
@@ -666,6 +669,7 @@ private:
                     p->hunger = clamp0(p->hunger - COST_MATE);
                     p->energy = clamp0(p->energy - COST_MATE);
                     p->social = 0;
+                    p->rest = MATE_COOLDOWN;
                 }
                 int px = n.x, py = n.y, pid = n.id;
                 spawn(px, py, 60, 70, 70, 0, 0);  // may reallocate npcs_: n and t are invalid after this

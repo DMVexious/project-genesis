@@ -49,13 +49,14 @@ TREE_REGROW = 60
 BUSH_REGROW = 40
 MATURE_AGE = 60
 START_AGE = 100
-POP_CAP = 40
+POP_CAP = 30
 SIGHT = 20
 GOTO_LIMIT = 60
 BUILD_SEARCH = 6
 MAX_TARGETS = 3
 TALK_SOCIAL = 5
 MATE_SOCIAL = 30
+MATE_COOLDOWN = 100      # world-time units a parent rests before another child
 MATE_PRIVACY = 1        # nobody else may be this close when two NPCs mate
 FARM_FOOD = 3
 FARM_REGROW = 25
@@ -92,7 +93,7 @@ class Rng:
 
 class Npc:
     __slots__ = ("id", "x", "y", "health", "hunger", "energy", "social", "wood",
-                 "food", "spear", "age", "alive", "asleep", "cause")
+                 "food", "spear", "age", "alive", "asleep", "cause", "rest")
 
     def __init__(self, id_, x, y, health, hunger, energy, social, age):
         self.id, self.x, self.y = id_, x, y
@@ -102,6 +103,7 @@ class Npc:
         self.alive = True
         self.asleep = False
         self.cause = ""
+        self.rest = 0  # mating cooldown, counts down in world time
 
     def to_json(self) -> dict:
         return {
@@ -258,7 +260,7 @@ class World:
     def mate_ok(self, a: Npc, b: Npc) -> bool:
         if a.age < MATURE_AGE or b.age < MATURE_AGE or a.age >= ELDER_AGE or b.age >= ELDER_AGE:
             return False
-        if a.social < MATE_SOCIAL or b.social < MATE_SOCIAL:
+        if a.social < MATE_SOCIAL or b.social < MATE_SOCIAL or a.rest > 0 or b.rest > 0:
             return False
         if a.hunger < 40 or b.hunger < 40 or a.health < 50 or b.health < 50:
             return False
@@ -466,6 +468,7 @@ class World:
                     p.hunger = max(0, p.hunger - COST_MATE)
                     p.energy = max(0, p.energy - COST_MATE)
                     p.social = 0
+                    p.rest = MATE_COOLDOWN
                 child = self.spawn(n.x, n.y, 60, 70, 70, 0, 0)
                 self.events.append({"type": "birth", "npc": child.id, "parents": [n.id, t.id]})
 
@@ -503,6 +506,7 @@ class World:
             n.hunger = max(0, n.hunger - 1)
             n.social = min(STAT_MAX, n.social + 1)
             n.age += 1
+            n.rest = max(0, n.rest - 1)
             if phase % 2 == 0:
                 n.energy = max(0, n.energy - 1)
             if n.hunger == 0 or n.energy == 0:
