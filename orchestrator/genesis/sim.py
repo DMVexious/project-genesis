@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import random
 from collections import deque
@@ -18,22 +19,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .brain import Canned, Interaction, NpcView, clamp_words, describe_action
+from .engine.defs import (ACTIONS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, INTERACTIONS, ITEMS,
+                          MATURE_AGE, OBJECTS, action_ticks, building_glyphs, same_action)
 from .memory import Memory
-from .engine_py import ELDER_AGE, MATURE_AGE
 from .traits import (Genome, belief_text, make_name, random_genome, random_look, random_persona, splice,
                      splice_look, splice_persona, voice_text)
 
 log = logging.getLogger(__name__)
 
-ACTION_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "❤️", "forage": "🍒",
-                "eat": "🍖", "trade": "🤝", "talk": "💬", "craft": "🗡️", "death": "💀"}
-BUILD_EMOJI = {"hut": "🔨", "farm": "🌱", "fire": "🔥"}
-FX_EVENTS = {"attack", "chop", "forage", "build", "eat", "craft", "sleep", "talk", "trade", "birth", "death"}
-
-# Base duration of each action in ticks, before the NPC's pace and random jitter.
-ACTION_TICKS = {"goto": 2, "goto_npc": 2, "wander": 3, "chop": 5, "forage": 3, "eat": 2,
-                "sleep": 7, "build:hut": 10, "build:farm": 6, "build:fire": 4, "craft_spear": 6,
-                "interact": 4}
+BUILDING_GLYPHS = building_glyphs()
+LOG_EMOJI = "💀🪦🏠🌀✨" + "".join(sorted({b.emoji for b in BUILDINGS}))  # stripped from news lines
 
 
 @dataclass
@@ -66,6 +61,8 @@ class SimConfig:
     courtship: int = 2        # affection (friendly exchanges, both ways) needed before "mate" is offered
     think_max_ticks: int = 40 # give up on a brain call after this many ticks (~6 s) and act on reflex
     convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
+    llm_choices: int = 10     # the LLM is shown at most this many actions (the most appealing ones)
+    map_name: str = "barren"  # world preset (engine.MAPS)
 
 
 class Simulation:
@@ -91,12 +88,14 @@ class Simulation:
         for task in getattr(self, "pending", {}).values():
             task.cancel()
         self.state = self.engine.init(self.cfg.seed, self.cfg.width, self.cfg.height,
-                                      self.cfg.population, self.cfg.decay_every)
+                                      self.cfg.population, self.cfg.decay_every, self.cfg.map_name)
+        self.commands: list[dict] = []  # player/world commands waiting for the next tick
         self.meta: dict[int, NpcMeta] = {}
         for n in self.state["npcs"]:
             self._register(n["id"], random_genome(self.rng), look=random_look(self.rng),
                            persona=random_persona(self.persona_rng))
-        self.totals = {"births": 0, "deaths": 0, "huts": 0, "farms": 0, "fires": 0, "fights": 0, "trades": 0}
+        self.totals = {"births": 0, "deaths": 0, **{b.stat: 0 for b in BUILDINGS if b.stat},
+                       "fights": 0, "trades": 0}
         self.homes: dict[int, tuple[int, int]] = {}  # NPC -> its home hut (built, inherited or claimed)
         self.vacant: set[tuple[int, int]] = set()    # huts whose owner died without an heir
         self.dialogue: list[dict] = []
@@ -135,11 +134,26 @@ class Simulation:
         x0, y0 = n["x"], n["y"]
         rows = [row[max(0, x0 - 5):x0 + 6] for row in self.state["tiles"][max(0, y0 - 5):y0 + 6]]
         count = lambda chars: sum(r.count(c) for r in rows for c in chars)  # noqa: E731
-        nearby = {"hut": count("H"), "farm": count("Ff"), "fire": count("C")}
+        nearby = {key: count(glyphs) for key, glyphs in BUILDING_GLYPHS.items()}
         home = self.homes.get(n["id"])
         dist = None if home is None else abs(home[0] - x0) + abs(home[1] - y0)
-        return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(str(n["id"]), []),
-                       nearby["hut"], nearby, dist, n["age"] >= ELDER_AGE, m.persona)
+        return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(n["id"], []),
+                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona)
+
+    # --- outside intervention -----------------------------------------------------
+    def enqueue(self, cmd: dict):
+        """Queue a world command (see ``World.apply``); it takes effect at the start of the next tick."""
+        self.commands.append(cmd)
+
+    def _drain_commands(self):
+        if not self.commands:
+            return
+        cmds, self.commands = self.commands, []
+        self.state = self.engine.apply(cmds)
+        for e in self.state["events"]:
+            if e["type"] == "arrive" and e["npc"] not in self.meta:  # a newcomer needs a name and a nature
+                self._register(e["npc"], random_genome(self.rng), look=random_look(self.rng),
+                               persona=random_persona(self.persona_rng), born_tick=self.state["tick"])
 
     def alive(self) -> list[dict]:
         return [n for n in self.state["npcs"] if n["alive"]]
@@ -152,6 +166,7 @@ class Simulation:
 
     async def tick(self) -> dict:
         await asyncio.sleep(0)  # let finished brain tasks deliver their results
+        self._drain_commands()
         names = self.names()
         living = {n["id"]: n for n in self.alive()}
         views = {nid: self.view(n) for nid, n in living.items()}
@@ -242,17 +257,16 @@ class Simulation:
         self.started = {}
         for nid, (idx, _) in choices.items():
             act = views[nid].actions[idx]
-            kind = act["kind"]
-            dur = self._duration(nid, f"build:{act['what']}" if kind == "build" else kind)
+            dur = self._duration(nid, act)
             self.busy_until[nid] = now + dur
-            self.activity[nid] = kind
+            self.activity[nid] = act["kind"]
             self.started[nid] = dur
 
         # 6. Memory logging + births.
         log_lines = self._process_events(self.state["events"], lines, now)
         for line in log_lines:
             if " talks to " not in line:
-                self.news.append(line.lstrip("💀🪦🏠🔨🌱🔥🌀 ").strip())
+                self.news.append(line.lstrip(LOG_EMOJI + "️ ").strip())
         if now % 10 == 0:  # embedding is costly; batch it (recall() flushes first anyway)
             self._flush_memory()
         return self._frame(lines, log_lines)
@@ -301,9 +315,8 @@ class Simulation:
     def llm_paused(self, tick: int | None = None) -> bool:
         return (self.state["tick"] if tick is None else tick) < self.llm_paused_until
 
-    def _duration(self, nid: int, kind: str) -> int:
-        base = ACTION_TICKS.get(kind, 2)
-        return max(1, round(base * self.meta[nid].pace * self.rng.uniform(0.75, 1.35)))
+    def _duration(self, nid: int, act: dict) -> int:
+        return max(1, round(action_ticks(act) * self.meta[nid].pace * self.rng.uniform(0.75, 1.35)))
 
     def _reflex(self, v: NpcView, choices, sources):
         # What to build is a deliberate choice: while an LLM is answering, only it
@@ -336,18 +349,14 @@ class Simulation:
                         self._llm_backoff = 0  # LLM answers are arriving in time again
 
     async def _decide(self, v: NpcView, names: dict[int, str]):
-        idx = await self.brain.choose_action(v, names)
-        return {"type": "act", "action": v.actions[idx], "source": "llm"}
+        # The LLM picks from a shortlist: small models choose badly from long lists.
+        keep = self.reflex.shortlist(v, self.cfg.llm_choices) if hasattr(self.reflex, "shortlist") \
+            else list(range(len(v.actions)))
+        short = dataclasses.replace(v, actions=[v.actions[i] for i in keep])
+        idx = await self.brain.choose_action(short, names)
+        return {"type": "act", "action": short.actions[idx], "source": "llm"}
 
-    @staticmethod
-    def _same_action(a: dict, b: dict) -> bool:
-        if a["kind"] != b["kind"]:
-            return False
-        if a["kind"] in ("goto", "build"):
-            return a["what"] == b["what"]
-        if a["kind"] in ("goto_npc", "interact"):
-            return a["target"] == b["target"]
-        return True
+    _same_action = staticmethod(same_action)
 
     def _apply_ready(self, v: NpcView, ready: dict, choices, sources, lines) -> bool:
         """Apply a decision that finished in the background, if it is still
@@ -406,7 +415,7 @@ class Simulation:
                           self.memory.grudge(other.id, nid), news)
         context = option
         judge = self.reflex if option == "mate" else brain
-        if option in ("trade", "mate") and not await judge.consent(rev, option, said):
+        if INTERACTIONS[option].consent and not await judge.consent(rev, option, said):
             self.memory.log(Memory(nid, other.id, self.state["tick"], "refused",
                                    f"{other.name} refused to {option} with me.", -1))
             context, option = f"refused_{option}", "talk"
@@ -450,14 +459,10 @@ class Simulation:
 
     @staticmethod
     def _matches(plan: dict, act: dict) -> bool:
-        if plan["kind"] != act["kind"]:
-            return False
-        if plan["kind"] == "goto":
-            return act["what"] == plan["what"]
-        return act["target"] == plan["target"]
+        return same_action(plan, act)
 
     def _commit_plan(self, v: NpcView, act: dict):
-        if act["kind"] == "goto" or act["kind"] == "goto_npc":
+        if ACTIONS[act["kind"]].walk:
             self.plans[v.id] = {**act, "ticks": 0}
         else:
             self.plans.pop(v.id, None)
@@ -468,12 +473,15 @@ class Simulation:
             return None
         s = v.stats
         health, neighbours = self._last_seen.get(v.id, (s["health"], frozenset()))
+        dest = OBJECTS.get(plan.get("what"))  # walking to a place: is it food, is it a bed?
+        to_food = dest is not None and dest.food > 0
+        to_bed = dest is not None and dest.sleep_energy > 0
         interrupt = (
             plan["ticks"] >= self.cfg.plan_max_ticks                       # periodic rethink
             or s["health"] < health                                       # got hurt
             or not self._neighbours(v) <= neighbours                      # someone new is adjacent
-            or (s["hunger"] < 25 and plan.get("what") != "bush")          # urgent needs
-            or (s["energy"] < 15 and plan.get("what") != "hut")
+            or (s["hunger"] < 25 and not to_food)                         # urgent needs
+            or (s["energy"] < 15 and not to_bed)
         )
         idx = None if interrupt else next(
             (i for i, a in enumerate(v.actions) if self._matches(plan, a)), None)
@@ -490,8 +498,10 @@ class Simulation:
         nm = lambda i: self.meta[i].name if i in self.meta else f"#{i}"  # noqa: E731
         out = []
         for e in events:
-            t, a = e["type"], e["npc"]
-            if t == "talk":
+            t, a = e["type"], e.get("npc", -1)
+            if t == "arrive":
+                out.append(f"✨ {nm(a)} appears out of nowhere")
+            elif t == "talk":
                 said = lines.get(a, {}).get("text", "")
                 reply = lines.get(a, {}).get("reply")
                 b = e["target"]
@@ -550,16 +560,17 @@ class Simulation:
                     out.append(f"💀 {nm(a)} died of {e['cause']}")
                 out.extend(self._pass_on_home(a, nm))
             elif t == "build":
-                what = e.get("what", "hut")
-                self.totals[{"hut": "huts", "farm": "farms", "fire": "fires"}[what]] += 1
-                if what == "hut" and a not in self.homes:
+                spec = OBJECTS[e["what"]]
+                if spec.stat:
+                    self.totals[spec.stat] += 1
+                if spec.home and a not in self.homes:
                     self.homes[a] = (e["x"], e["y"])
                     out.append(f"🏠 {nm(a)} builds a home at ({e['x']},{e['y']})")
                 else:
-                    label = {"hut": "another hut", "farm": "a farm", "fire": "a campfire"}[what]
-                    out.append(f"{BUILD_EMOJI[what]} {nm(a)} builds {label} at ({e['x']},{e['y']})")
+                    label = f"another {spec.place}" if spec.home else spec.label
+                    out.append(f"{spec.emoji} {nm(a)} builds {label} at ({e['x']},{e['y']})")
             elif t == "craft":
-                out.append(f"{nm(a)} crafts a spear")
+                out.append(f"{nm(a)} crafts a {ITEMS[e['what']].label}")
             elif t == "sleep" and a not in self.homes and self.vacant:
                 me = next((n for n in self.state["npcs"] if n["id"] == a), None)
                 hut = next((h for h in sorted(self.vacant)
@@ -605,14 +616,16 @@ class Simulation:
         tick = self.state["tick"]
         action_emoji: dict[int, str] = {}
         for e in self.state["events"]:
-            emoji = ACTION_EMOJI.get(e["type"])
+            emoji = EVENT_EMOJI.get(e["type"])
             if not emoji:
                 continue
             if e["type"] == "birth":
                 for p in e["parents"]:
                     action_emoji[p] = emoji
             elif e["type"] == "build":
-                action_emoji[e["npc"]] = BUILD_EMOJI.get(e.get("what"), emoji)
+                action_emoji[e["npc"]] = OBJECTS[e["what"]].emoji or emoji
+            elif e["type"] == "craft":
+                action_emoji[e["npc"]] = ITEMS[e["what"]].emoji or emoji
             elif e["type"] == "eat" and e.get("cooked"):
                 action_emoji[e["npc"]] = "🍲"
             elif e["type"] == "attack" and not e["retaliation"]:
@@ -641,7 +654,7 @@ class Simulation:
                 status = ""
             npcs.append({
                 **{k: n[k] for k in ("id", "x", "y", "alive", "health", "hunger", "energy", "social",
-                                     "wood", "food", "spear", "age", "cause")},
+                                     "inv", "age", "cause")},
                 "name": m.name, "traits": m.genome.to_dict(), "generation": m.generation,
                 "belief": belief_text(m.persona) if m.persona else "",
                 "voice": voice_text(m.persona) if m.persona else "",
@@ -667,7 +680,9 @@ class Simulation:
 
         frame = {
             "type": "frame", "tick": tick, "width": self.state["width"], "height": self.state["height"],
-            "tiles": self.state["tiles"], "npcs": npcs, "dialogue": dialogue, "log": log_lines,
+            # "rev" changes whenever a tile does; the server only resends "tiles" when it has
+            "rev": self.state["rev"], "tiles": self.state["tiles"],
+            "npcs": npcs, "dialogue": dialogue, "log": log_lines,
             # this tick's engine events, so the front end can animate swings, hits, chops...
             "fx": [e for e in self.state["events"] if e["type"] in FX_EVENTS],
             "stats": {"population": len(self.alive()), "memories": self.memory.count(),
@@ -675,7 +690,7 @@ class Simulation:
                       "decisions": dict(self.decision_stats),
                       **self.totals},
             "brain": getattr(self.brain, "name", "?") + (" (paused: slow)" if self.llm_paused(tick) else ""),
-            "engine": getattr(self.engine, "name", "?"),
+            "map": self.cfg.map_name,
             "memory": getattr(self.memory, "name", "?"),
         }
         self.last_frame = frame

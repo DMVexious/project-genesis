@@ -6,7 +6,7 @@ import logging
 import os
 
 from .brain import make_brain
-from .engine_client import make_engine
+from .engine import DEFAULT_MAP, MAPS, Engine
 from .memory import make_memory
 from .sim import SimConfig, Simulation
 
@@ -16,8 +16,7 @@ def add_sim_args(p: argparse.ArgumentParser):
     p.add_argument("--width", type=int, default=80)
     p.add_argument("--height", type=int, default=56)
     p.add_argument("--population", type=int, default=16)
-    p.add_argument("--engine", choices=["auto", "cpp", "python"], default="auto",
-                   help="auto = compiled C++ engine if built, else the Python reference engine")
+    p.add_argument("--map", choices=sorted(MAPS), default=DEFAULT_MAP, help="world preset")
     p.add_argument("--brain", choices=["auto", "llm", "ollama", "heuristic"], default="auto",
                    help="auto = llama.cpp if its server answers, else Ollama, else heuristic")
     p.add_argument("--llm-url", default="http://127.0.0.1:8080", help="llama-server base URL")
@@ -35,10 +34,10 @@ def add_sim_args(p: argparse.ArgumentParser):
 async def build_sim(args) -> Simulation:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
-    engine = make_engine(args.engine)
+    engine = Engine()
     brain = await make_brain(args.brain, args.llm_url, args.seed, args.ollama_url, args.model)
     memory = make_memory(args.memory, args.memory_path)
     cfg = SimConfig(seed=args.seed, width=args.width, height=args.height, population=args.population,
-                    llm_interval=args.llm_every, llm_budget=args.llm_budget)
-    logging.getLogger("genesis").info("engine=%s brain=%s memory=%s", engine.name, brain.name, memory.name)
+                    llm_interval=args.llm_every, llm_budget=args.llm_budget, map_name=args.map)
+    logging.getLogger("genesis").info("map=%s brain=%s memory=%s", cfg.map_name, brain.name, memory.name)
     return Simulation(engine, brain, memory, cfg)

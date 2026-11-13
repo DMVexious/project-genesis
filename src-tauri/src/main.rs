@@ -1,8 +1,8 @@
 // Project Genesis desktop shell.
 //
 // Opens the Phaser front end in a native window and launches the Python
-// orchestrator sidecar, which in turn drives the C++ engine sidecar over
-// stdin/stdout. The front end talks to the orchestrator on ws://127.0.0.1:8765.
+// orchestrator sidecar, which runs the game engine and the NPC brains. The
+// front end talks to the orchestrator on ws://127.0.0.1:8765.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;

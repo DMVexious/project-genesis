@@ -1,17 +1,14 @@
 # Phase 4: build the Project Genesis desktop app.
-#   1. C++ engine            -> engine/build/engine.exe
-#   2. Python orchestrator   -> orchestrator/dist/orchestrator.exe (PyInstaller, one file)
-#   3. Copy both into src-tauri/binaries with the target-triple suffix Tauri expects
-#   4. tauri build           -> src-tauri/target/release/bundle/nsis/*-setup.exe
+#   1. Python orchestrator   -> orchestrator/dist/orchestrator.exe (PyInstaller, one file)
+#   2. Copy it into src-tauri/binaries with the target-triple suffix Tauri expects
+#   3. tauri build           -> src-tauri/target/release/bundle/nsis/*-setup.exe
 #
 # Prereqs: .venv with orchestrator/requirements.txt + pyinstaller, Rust (rustup),
-# VS C++ Build Tools, Node (npm install at repo root for the Tauri CLI).
+# VS C++ Build Tools (for Rust), Node (npm install at repo root for the Tauri CLI).
 param([switch]$SkipOrchestrator)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $py = Join-Path $root '.venv\Scripts\python.exe'
-
-& (Join-Path $root 'engine\build.ps1')
 
 if (-not $SkipOrchestrator) {
     Push-Location (Join-Path $root 'orchestrator')
@@ -30,7 +27,6 @@ if (-not $SkipOrchestrator) {
 $triple = (& rustc -vV | Select-String '^host:').ToString().Split(' ')[1]
 $bin = Join-Path $root 'src-tauri\binaries'
 New-Item -ItemType Directory -Force $bin | Out-Null
-Copy-Item (Join-Path $root 'engine\build\engine.exe') (Join-Path $bin "engine-$triple.exe") -Force
 Copy-Item (Join-Path $root 'orchestrator\dist\orchestrator.exe') (Join-Path $bin "orchestrator-$triple.exe") -Force
 
 Push-Location $root

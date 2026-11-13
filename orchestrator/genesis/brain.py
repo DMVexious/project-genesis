@@ -19,6 +19,8 @@ import random
 import re
 from dataclasses import dataclass, field
 
+from .engine.defs import (ACTIONS, BUILDINGS, INTERACTIONS, MATURE_AGE, OBJECTS, cost_text,
+                          describe_action)  # noqa: F401  (describe_action is re-exported)
 from .traits import BELIEFS, TRAIT_HINTS, Genome, belief_text, voice_text
 
 log = logging.getLogger(__name__)
@@ -53,39 +55,15 @@ class Interaction:
 
 # --- Prompt assembly ---------------------------------------------------------
 
-# name -> (wood cost, what it is for); costs must match the engine's BUILDINGS
-BUILD_INFO = {
-    "hut": (10, "becomes your home; best sleep and healing"),
-    "farm": (6, "crops that regrow 3 food again and again"),
-    "fire": (3, "campfire: cooked meals fill more, warmer sleep, a gathering spot"),
-}
-PLACE_NAMES = {"tree": "tree", "bush": "berry bush", "hut": "hut", "farm": "farm", "fire": "campfire"}
+def have(stats: dict, item: str) -> int:
+    """How many of an item an NPC carries (``stats`` is the engine's NPC record)."""
+    return stats.get("inv", {}).get(item, 0)
 
-def describe_action(act: dict, names: dict[int, str], me: dict) -> str:
-    k = act["kind"]
-    if k == "sleep":
-        return "Sleep (restore energy)"
-    if k == "eat":
-        return f"Eat food (you carry {me['food']})"
-    if k == "chop":
-        return "Chop the adjacent tree (+4 wood)"
-    if k == "forage":
-        return "Gather food from the adjacent bush or farm (+2-3 food)"
-    if k == "build":
-        what = act.get("what", "hut")
-        cost, why = BUILD_INFO.get(what, (0, ""))
-        return f"Build a {PLACE_NAMES.get(what, what)} here (costs {cost} wood; {why})"
-    if k == "craft_spear":
-        return "Craft a spear (costs 5 wood, stronger in fights)"
-    if k == "interact":
-        return f"Interact with {names.get(act['target'], '?')}"
-    if k == "goto":
-        return f"Walk toward the nearest {PLACE_NAMES.get(act['what'], act['what'])} ({act['dist']} steps)"
-    if k == "goto_npc":
-        return f"Walk toward {names.get(act['target'], '?')} ({act['dist']} steps)"
-    if k == "wander":
-        return "Wander randomly"
-    return k
+
+def building_rules() -> str:
+    """One sentence listing what can be built, straight from the content registry."""
+    return "You decide what to build: " + "; ".join(
+        f"a {b.place} ({cost_text(b.cost)}): {b.why}" for b in BUILDINGS) + "."
 
 
 def system_prompt(v: NpcView) -> str:
@@ -101,12 +79,11 @@ def action_prompt(v: NpcView, names: dict[int, str]) -> list[dict]:
         "you": {"name": v.name, "health": s["health"], "fullness": s["hunger"],
                 "energy": s["energy"], "social_urge": s["social"], "age": s["age"],
                 "life_stage": "elder (cannot have children)" if v.elder else
-                              ("child" if s["age"] < 60 else "adult"),
-                "inventory": {"wood": s["wood"], "food": s["food"], "spear": bool(s["spear"])}},
+                              ("child" if s["age"] < MATURE_AGE else "adult"),
+                "inventory": dict(s.get("inv", {}))},
         "home": "none - you have no hut of your own" if v.home is None else f"your hut is about {v.home} tiles away",
         "rules": "Stats are 0-100. Fullness drops over time; at 0 you starve. Energy at 0 hurts you. "
-                 "You decide what to build: a hut (10 wood) is a home, a farm (6 wood) feeds you for good, "
-                 "a campfire (3 wood) cooks food and draws company. Everyone ages and dies one day.",
+                 + building_rules() + " Everyone ages and dies one day.",
         "buildings_within_5_tiles": v.nearby or {"hut": v.huts_nearby},
         "valid_actions": {str(i): describe_action(a, names, s) for i, a in enumerate(v.actions)},
     }
@@ -132,7 +109,7 @@ def tone_examples(v: NpcView, k: int = 3) -> list[str]:
 def dialogue_system_prompt(v: NpcView) -> str:
     hints = "; ".join(TRAIT_HINTS[t] for t in v.genome.traits())
     persona = f" You {belief_text(v.persona)}, and you {voice_text(v.persona)}." if v.persona else ""
-    stage = "an elder" if v.elder else ("a child" if v.stats.get("age", 99) < 60 else "an adult")
+    stage = "an elder" if v.elder else ("a child" if v.stats.get("age", 99) < MATURE_AGE else "an adult")
     return (f"You are {v.name}, {stage} in a tiny, strange stone-age village where people are born, "
             f"feud, love and die.{persona} Temperament: {hints}.\n"
             "You are an odd, vivid character, not a polite assistant. Never greet, never ask how someone is, "
@@ -150,12 +127,12 @@ def _situation(ix: Interaction) -> dict:
     elif ix.grudge >= 2:
         mood = "you are fond of them"
     them = {"name": ix.other.name, "health": ix.other.stats["health"],
-            "has_spear": bool(ix.other.stats["spear"]), "age": ix.other.stats["age"]}
+            "has_spear": bool(have(ix.other.stats, "spear")), "age": ix.other.stats["age"]}
     if ix.other.persona:
         them["rumour_about_them"] = f"they {belief_text(ix.other.persona)}"
     return {
         "you": {"health": ix.me.stats["health"], "fullness": ix.me.stats["hunger"],
-                "food": ix.me.stats["food"], "wood": ix.me.stats["wood"],
+                "food": have(ix.me.stats, "food"), "wood": have(ix.me.stats, "wood"),
                 "social_urge": ix.me.stats["social"]},
         "them": them,
         "your_memories_of_them": ix.memories or ["You have never spoken."],
@@ -167,12 +144,9 @@ def _situation(ix: Interaction) -> dict:
 # What each interaction option means, shown to the model next to the bare option name.
 # Without these, small models only ever pick "talk" or "fight": a bare "mate" never got chosen,
 # so LLM-driven villages had no births and died out of old age.
-OPTION_MEANING = {
-    "talk": "just talk",
-    "fight": "attack them",
-    "trade": "offer to swap your food and wood",
-    "mate": "ask them to start a family with you (you are fond of each other; a child carries on your line)",
-}
+OPTION_MEANING = {i.key: i.meaning for i in INTERACTIONS.values()}
+THEY_WANT = {**{i.key: i.they_want for i in INTERACTIONS.values()},
+             **{f"refused_{i.key}": i.refused for i in INTERACTIONS.values() if i.consent}}
 
 
 def interaction_prompt(ix: Interaction) -> list[dict]:
@@ -188,10 +162,7 @@ def interaction_prompt(ix: Interaction) -> list[dict]:
 def reply_prompt(ix: Interaction, heard: str, option: str) -> list[dict]:
     """``ix.me`` is the one answering; ``ix.other`` just spoke to them."""
     payload = {**_situation(ix), "they_said": heard,
-               "they_want": {"talk": "to talk", "fight": "to fight you", "trade": "to trade",
-                             "mate": "to start a family with you",
-                             "refused_trade": "to trade, and you refused",
-                             "refused_mate": "to start a family with you, and you said no"}.get(option, option)}
+               "they_want": THEY_WANT.get(option, option)}
     return [
         {"role": "system", "content": dialogue_system_prompt(ix.me)},
         {"role": "user", "content": json.dumps(payload) +
@@ -303,6 +274,142 @@ LINES = {
     "trade": {"*": ["Wood for berries? Fair deal.", "Let us trade, neighbour.", "I need food, take wood."]},
     "mate": {"*": ["Let us build a family together.", "Stay with me tonight.", "Our children will thrive here."]},
 }
+DEFAULT_LINES = ["Hm.", "You. Yes, you.", "Listen to me."]
+
+
+# How much an NPC wants each kind of action: SCORERS[kind](view, action) -> score.
+# Every action kind in the content registry needs one (checked below).
+SCORERS: dict = {}
+
+
+def scorer(kind):
+    def reg(fn):
+        SCORERS[kind] = fn
+        return fn
+    return reg
+
+
+@scorer("sleep")
+def _(v, a):
+    e = v.stats["energy"]
+    return (100 if e == 0 else (85 if e < 25 else 4)) + (12 if v.genome.work == "Lazy" else 0)
+
+
+@scorer("eat")
+def _(v, a):
+    h = v.stats["hunger"]
+    return 80 + (50 - h) if h < 55 else 0
+
+
+@scorer("forage")
+def _(v, a):
+    return 50 + (20 if v.stats["hunger"] < 60 else 0) if have(v.stats, "food") < 4 else 5
+
+
+@scorer("chop")
+def _(v, a):
+    return (35 if have(v.stats, "wood") < 12 else 5) + {"Industrious": 15, "Visionary": 10, "Lazy": -20}.get(
+        v.genome.work, 0)
+
+
+def _build_hut(v, near):
+    if v.home is None:  # everyone wants a home of their own
+        return 60 + (15 if v.genome.work == "Visionary" else 0)
+    return 40 if v.genome.work == "Visionary" and near.get("hut", 0) < 4 else 2
+
+
+def _build_farm(v, near):
+    return {"Industrious": 45, "Visionary": 35, "Lazy": 10}.get(v.genome.work, 20) - 25 * near.get("farm", 0)
+
+
+def _build_fire(v, near):
+    return (30 + (15 if v.genome.social == "Charismatic" else 0)) if near.get("fire", 0) == 0 else 2
+
+
+# Buildings without an entry get a mild "worth having one nearby" score.
+BUILD_SCORERS = {"hut": _build_hut, "farm": _build_farm, "fire": _build_fire}
+
+
+@scorer("build")
+def _(v, a):
+    near = v.nearby or {"hut": v.huts_nearby}
+    fn = BUILD_SCORERS.get(a["what"])
+    return fn(v, near) if fn else (20 if near.get(a["what"], 0) == 0 else 2)
+
+
+@scorer("craft")
+def _(v, a):
+    if a["what"] == "spear":
+        return 60 if v.genome.aggression in ("Hostile", "Bloodthirsty") else 12
+    return 15
+
+
+def _goto_tree(v, a):
+    wants = 30 + (20 if v.genome.work == "Industrious" else 0) if have(v.stats, "wood") < 15 else 5
+    return wants - a["dist"] / 2
+
+
+def _goto_bush(v, a):
+    return (70 if v.stats["hunger"] < 60 and have(v.stats, "food") == 0 else 20) - a["dist"]
+
+
+def _goto_farm(v, a):
+    return (75 if v.stats["hunger"] < 60 and have(v.stats, "food") == 0 else 15) - a["dist"]
+
+
+def _goto_fire(v, a):
+    score = (25 if have(v.stats, "food") > 0 and v.stats["hunger"] < 60 else 4) - a["dist"] / 2
+    return score + (10 if v.genome.social == "Charismatic" else 0)
+
+
+def _goto_shelter(v, a):
+    return (55 if v.stats["energy"] < 35 else 3) - a["dist"]
+
+
+GOTO_SCORERS = {"tree": _goto_tree, "bush": _goto_bush, "farm": _goto_farm, "fire": _goto_fire,
+                "hut": _goto_shelter}
+
+
+@scorer("goto")
+def _(v, a):
+    fn = GOTO_SCORERS.get(a["what"])
+    if fn:
+        return fn(v, a)
+    spec = OBJECTS.get(a["what"])
+    if spec and spec.food:           # somewhere to find food
+        return _goto_bush(v, a)
+    if spec and spec.sleep_energy:   # somewhere to rest
+        return _goto_shelter(v, a)
+    return 5 - a["dist"] / 2
+
+
+@scorer("goto_npc")
+def _(v, a):
+    s, g = v.stats, v.genome
+    score = {"Charismatic": 45, "Loner": 0, "Paranoid": 10}.get(g.social, 20) + s["social"] / 4
+    score += 12 if g.aggression == "Bloodthirsty" else 0
+    # adults with the urge go looking for a partner
+    if MATURE_AGE <= s["age"] and not v.elder and s["social"] >= 30 and s["hunger"] >= 50:
+        score += 25
+    return score - a["dist"] / 2
+
+
+@scorer("interact")
+def _(v, a):
+    g = v.genome
+    score = 30 + v.stats["social"] / 3
+    score += {"Charismatic": 15, "Loner": -25, "Paranoid": -10}.get(g.social, 0)
+    score += 15 if g.aggression == "Bloodthirsty" else 0
+    return score + (25 if "mate" in a["options"] else 0)
+
+
+@scorer("wander")
+def _(v, a):
+    return 12
+
+
+_unscored = [k for k in ACTIONS if k not in SCORERS]
+assert not _unscored, f"action kinds without a heuristic scorer: {_unscored}"
 
 
 class HeuristicBrain:
@@ -314,73 +421,33 @@ class HeuristicBrain:
     async def choose_action(self, v: NpcView, names: dict[int, str]) -> int:
         return self.pick_action(v)
 
-    @staticmethod
-    def _build_score(v: NpcView, what: str) -> float:
-        g, near = v.genome, v.nearby or {"hut": v.huts_nearby}
-        if what == "hut":
-            if v.home is None:  # everyone wants a home of their own
-                return 60 + (15 if g.work == "Visionary" else 0)
-            return 40 if g.work == "Visionary" and near.get("hut", 0) < 4 else 2
-        if what == "farm":
-            score = {"Industrious": 45, "Visionary": 35, "Lazy": 10}.get(g.work, 20)
-            return score - 25 * near.get("farm", 0)
-        if what == "fire":
-            return (30 + (15 if g.social == "Charismatic" else 0)) if near.get("fire", 0) == 0 else 2
-        return 0
+    def scores(self, v: NpcView) -> list[float]:
+        """How much this NPC wants each offered action (no randomness)."""
+        return [SCORERS[a["kind"]](v, a) for a in v.actions]
 
     def pick_action(self, v: NpcView, avoid: frozenset = frozenset()) -> int:
-        s, g = v.stats, v.genome
         best, best_score = 0, float("-inf")
         for i, a in enumerate(v.actions):
-            k = a["kind"]
-            if k in avoid:
+            if a["kind"] in avoid:
                 continue
-            score = 0.0
-            if k == "sleep":
-                score = 100 if s["energy"] == 0 else (85 if s["energy"] < 25 else 4)
-                score += 12 if g.work == "Lazy" else 0
-            elif k == "eat":
-                score = 80 + (50 - s["hunger"]) if s["hunger"] < 55 else 0
-            elif k == "forage":
-                score = 50 + (20 if s["hunger"] < 60 else 0) if s["food"] < 4 else 5
-            elif k == "chop":
-                score = 35 if s["wood"] < 12 else 5
-                score += {"Industrious": 15, "Visionary": 10, "Lazy": -20}.get(g.work, 0)
-            elif k == "build":
-                score = self._build_score(v, a.get("what", "hut"))
-            elif k == "craft_spear":
-                score = 60 if g.aggression in ("Hostile", "Bloodthirsty") else 12
-            elif k == "goto":
-                d = a["dist"]
-                if a["what"] == "bush":
-                    score = (70 if s["hunger"] < 60 and s["food"] == 0 else 20) - d
-                elif a["what"] == "tree":
-                    score = (30 + (20 if g.work == "Industrious" else 0) if s["wood"] < 15 else 5) - d / 2
-                elif a["what"] == "farm":
-                    score = (75 if s["hunger"] < 60 and s["food"] == 0 else 15) - d
-                elif a["what"] == "fire":
-                    score = (25 if s["food"] > 0 and s["hunger"] < 60 else 4) - d / 2
-                    score += 10 if g.social == "Charismatic" else 0
-                else:
-                    score = (55 if s["energy"] < 35 else 3) - d
-            elif k == "goto_npc":
-                score = {"Charismatic": 45, "Loner": 0, "Paranoid": 10}.get(g.social, 20) + s["social"] / 4
-                score += 12 if g.aggression == "Bloodthirsty" else 0
-                # adults with the urge go looking for a partner (60 = adulthood, see engine)
-                if 60 <= s["age"] and not v.elder and s["social"] >= 30 and s["hunger"] >= 50:
-                    score += 25
-                score -= a["dist"] / 2
-            elif k == "interact":
-                score = 30 + s["social"] / 3
-                score += {"Charismatic": 15, "Loner": -25, "Paranoid": -10}.get(g.social, 0)
-                score += 15 if g.aggression == "Bloodthirsty" else 0
-                score += 25 if "mate" in a["options"] else 0
-            elif k == "wander":
-                score = 12
-            score += self.rng.random() * 10
+            score = SCORERS[a["kind"]](v, a) + self.rng.random() * 10
             if score > best_score:
                 best, best_score = i, score
         return best
+
+    def shortlist(self, v: NpcView, k: int) -> list[int]:
+        """Indices of the ``k`` most appealing actions, in their original order.
+        Small models choose badly from long lists, so the LLM is only shown
+        these. Sleeping and eating always stay on the list."""
+        if len(v.actions) <= k:
+            return list(range(len(v.actions)))
+        sc = self.scores(v)
+        keep = {i for i, a in enumerate(v.actions) if a["kind"] in ("sleep", "eat")}
+        for i in sorted(range(len(sc)), key=lambda i: (-sc[i], i)):
+            if len(keep) >= k:
+                break
+            keep.add(i)
+        return sorted(keep)
 
     async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
         option, line = await self._choose_interaction(ix)
@@ -396,16 +463,17 @@ class HeuristicBrain:
             "fight": {"Pacifist": 0, "Neutral": 0, "Hostile": 10, "Bloodthirsty": 30}[g.aggression]
                      + min(30, max(0, -ix.grudge) * 4) + (10 if g.social == "Paranoid" and ix.grudge < 0 else 0)
                      - (25 if ix.me.stats["health"] < 40 else 0),
-            "trade": 45.0 if ix.me.stats["food"] == 0 or ix.me.stats["wood"] < 2 else 8.0,
+            "trade": 45.0 if have(ix.me.stats, "food") == 0 or have(ix.me.stats, "wood") < 2 else 8.0,
             "mate": 55.0 + (20 if g.social == "Charismatic" else 0) - (60 if ix.grudge < -1 else 0),
         }
         if g.aggression == "Pacifist":
             weights["fight"] = -100
-        scored = {o: weights[o] + self.rng.random() * 15 for o in ix.options}
+        scored = {o: weights.get(o, 10.0) + self.rng.random() * 15 for o in ix.options}
         option = max(scored, key=scored.get)
         if option == "talk" and ix.me.persona and self.rng.random() < 0.6:
             return option, BELIEFS[ix.me.persona["belief"]][1]
-        pool = LINES[option].get(g.aggression) or LINES[option]["*"]
+        lines = LINES.get(option, {})
+        pool = lines.get(g.aggression) or lines.get("*") or DEFAULT_LINES
         return option, self.rng.choice(pool)
 
     async def _reply(self, ix: Interaction, heard: str, option: str) -> str:

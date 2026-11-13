@@ -3,9 +3,11 @@
     python -m genesis.server            # then open http://127.0.0.1:8765
 
 Client -> server messages (JSON): {"cmd": "pause" | "resume" | "step"},
-{"cmd": "speed", "tick_ms": 300}, {"cmd": "reset", "seed": 123}.
-Server -> client: {"type": "frame", ...} every tick (see sim.Simulation._frame),
-plus {"type": "control", "paused": bool, "tick_ms": int} on changes.
+{"cmd": "speed", "tick_ms": 300}, {"cmd": "reset", "seed": 123, "map": ..., "width": ...,
+"height": ..., "population": ...}, {"cmd": "world", "op": {...}} (see World.apply).
+Server -> client: {"type": "defs", ...} once on connect (the content registry),
+{"type": "frame", ...} every tick (see sim.Simulation._frame), plus
+{"type": "control", "paused": bool, "tick_ms": int, ...} on changes.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import mimetypes
 import os
 import sys
 import threading
@@ -24,8 +27,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from .config import add_sim_args, build_sim
+from .engine import MAPS
+from .engine.defs import client_defs
 
 log = logging.getLogger("genesis.server")
+# Browsers refuse ES modules served as text/plain, which is what Windows' registry can say .js is.
+mimetypes.add_type("text/javascript", ".js")
 WEB_DIR = Path(os.environ.get("GENESIS_WEB_DIR", Path(__file__).resolve().parents[2] / "web"))
 
 
@@ -37,9 +44,12 @@ class Hub:
         self.clients: set[WebSocket] = set()
         self._step_once = asyncio.Event()
         self._lock = asyncio.Lock()
+        self._sent_map = None  # (width, height, rev) of the last map broadcast
 
     def control(self) -> dict:
-        return {"type": "control", "paused": self.paused, "tick_ms": self.tick_ms, "seed": self.sim.cfg.seed}
+        cfg = self.sim.cfg
+        return {"type": "control", "paused": self.paused, "tick_ms": self.tick_ms, "seed": cfg.seed,
+                "map": cfg.map_name, "width": cfg.width, "height": cfg.height, "population": cfg.population}
 
     async def broadcast(self, msg: dict):
         dead = []
@@ -64,29 +74,59 @@ class Hub:
                         self.paused = True
                         await self.broadcast(self.control())
                         continue
+                # The map is most of a frame and changes on few ticks: send it only when it did.
+                # (A client that just connected was sent the whole latest frame; see ws_endpoint.)
+                key = (frame["width"], frame["height"], frame["rev"])
+                if key == self._sent_map:
+                    frame = {k: v for k, v in frame.items() if k != "tiles"}
+                self._sent_map = key
                 await self.broadcast(frame)
                 if frame["stats"]["population"] == 0 and not self.paused:
                     self.paused = True
                     await self.broadcast(self.control())
             await asyncio.sleep(max(0.02, self.tick_ms / 1000 - (time.perf_counter() - t0)))
 
+    # --- client commands: {"cmd": name, ...} -> _cmd_<name> ---------------------
     async def handle(self, msg: dict):
-        cmd = msg.get("cmd")
-        if cmd == "pause":
-            self.paused = True
-        elif cmd == "resume":
-            self.paused = False
-        elif cmd == "step":
-            self.paused = True
-            self._step_once.set()
-        elif cmd == "speed":
-            self.tick_ms = max(50, min(2000, int(msg.get("tick_ms", self.tick_ms))))
-        elif cmd == "reset":
-            async with self._lock:
-                seed = msg.get("seed")
-                self.sim.reset(int(seed) if seed is not None else None)
-            await self.broadcast(self.sim.last_frame)
+        fn = getattr(self, f"_cmd_{msg.get('cmd')}", None)
+        if fn is None:
+            log.warning("unknown client command %r", msg.get("cmd"))
+            return
+        await fn(msg)
         await self.broadcast(self.control())
+
+    async def _cmd_pause(self, msg):
+        self.paused = True
+
+    async def _cmd_resume(self, msg):
+        self.paused = False
+
+    async def _cmd_step(self, msg):
+        self.paused = True
+        self._step_once.set()
+
+    async def _cmd_speed(self, msg):
+        self.tick_ms = max(50, min(2000, int(msg.get("tick_ms", self.tick_ms))))
+
+    async def _cmd_reset(self, msg):
+        """New world. Optional: seed, map, width, height, population."""
+        cfg = self.sim.cfg
+        seed = msg.get("seed")
+        if msg.get("map") in MAPS:
+            cfg.map_name = msg["map"]
+        for key, lo, hi in (("width", 16, 240), ("height", 12, 180), ("population", 1, 60)):
+            if msg.get(key) is not None:
+                setattr(cfg, key, max(lo, min(hi, int(msg[key]))))
+        async with self._lock:
+            self.sim.reset(int(seed) if seed is not None else None)
+        self._sent_map = None
+        await self.broadcast(self.sim.last_frame)
+
+    async def _cmd_world(self, msg):
+        """Change the world directly (see ``World.apply``); applied at the start of the next tick."""
+        op = msg.get("op")
+        if isinstance(op, dict):
+            self.sim.enqueue(op)
 
 
 def create_app(args) -> FastAPI:
@@ -114,6 +154,7 @@ def create_app(args) -> FastAPI:
         hub: Hub = app.state.hub
         await ws.accept()
         hub.clients.add(ws)
+        await ws.send_json({"type": "defs", **client_defs(), "maps": sorted(MAPS)})
         await ws.send_json(hub.control())
         await ws.send_json(hub.sim.last_frame)
         try:

@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>A village of LLM-driven NPCs that forage, build, trade, fight, fall in love, grow old and die.</b><br>
-  Nothing is scripted. A deterministic C++ engine owns the world, and a small local LLM only ever picks from the engine's list of legal moves.
+  Nothing is scripted. A deterministic engine owns the world, and a small local LLM only ever picks from the engine's list of legal moves.
 </p>
 
 <p align="center">
@@ -12,7 +12,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-WebSocket-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Phaser-3.90-8E44AD" alt="Phaser">
@@ -56,7 +55,7 @@ All clips are the simulation running live on a local model through Ollama. No ev
 
 ## The LLM can't cheat
 
-Small models are bad at rules, so Genesis never asks them to follow any. Every tick the C++ engine works out what each villager is *allowed* to do, and the model's answer is constrained by a grammar to exactly those options. It can be rude, paranoid or strange, but it can never make an illegal move.
+Small models are bad at rules, so Genesis never asks them to follow any. Every tick the engine works out what each villager is *allowed* to do, and the model's answer is constrained by a grammar to exactly those options. It can be rude, paranoid or strange, but it can never make an illegal move.
 
 What one villager sees on its turn (abridged from `python -m genesis.terminal --show-prompt`):
 
@@ -101,22 +100,22 @@ flowchart LR
     BRAIN["<b>brain.py</b><br/>Ollama or llama-server<br/>grammar-constrained"]
     MEM["<b>memory.py</b><br/>ChromaDB grudges and alliances"]
     TRAITS["<b>traits.py</b><br/>genetics, looks, personas"]
-    ENG["<b>engine/</b> C++17<br/>grid, BFS pathing, stats,<br/>combat, building, births"]
+    ENG["<b>genesis/engine/</b><br/>terrain, objects, pathing, stats,<br/>combat, building, births"]
     UI <-->|WebSocket| ORCH
     ORCH --> BRAIN
     ORCH --> MEM
     ORCH --> TRAITS
-    ORCH <-->|"stdin/stdout, one JSON line per tick"| ENG
+    ORCH <-->|"valid actions out, chosen indices in"| ENG
 ```
 
 ### Roadmap
 
 | Phase | State |
 |---|---|
-| 1 Terminal prototype | ✅ C++ engine, Python orchestrator, ASCII terminal view, prompt/grammar inspector |
+| 1 Terminal prototype | ✅ Engine, Python orchestrator, ASCII terminal view, prompt/grammar inspector |
 | 2 Local web UI | ✅ Phaser world, procedural pixel art, emojis, 14-word speech bubbles (with replies) that fade 4 ticks later |
 | 3 RAG & genetics | ✅ ChromaDB memories feed interaction prompts; 50/50 trait splicing with 5% mutation |
-| 4 Tauri packaging | ✅ Tauri v2 shell + orchestrator/engine sidecars → NSIS installer |
+| 4 Tauri packaging | ✅ Tauri v2 shell + orchestrator sidecar → NSIS installer |
 
 ## Quick start
 
@@ -125,7 +124,6 @@ Windows / PowerShell:
 ```powershell
 python -m venv .venv
 .venv\Scripts\pip install -r orchestrator\requirements.txt
-.\engine\build.ps1                       # optional: without it the Python reference engine is used
 
 cd orchestrator
 ..\.venv\Scripts\python -m genesis.server        # open http://127.0.0.1:8765
@@ -137,7 +135,7 @@ cd orchestrator
 If [Ollama](https://ollama.com) is installed, it's used automatically with no setup. Without any LLM, villagers fall back to a heuristic brain, so the sim still runs.
 
 Common flags (both entry points): `--seed`, `--width`, `--height`, `--population`,
-`--engine auto|cpp|python`, `--brain auto|llm|heuristic`, `--llm-url`,
+`--map <preset>`, `--brain auto|llm|ollama|heuristic`, `--llm-url`,
 `--memory auto|chromadb|simple`, `--memory-path DIR` (persist ChromaDB).
 
 To film it: `?bare=1` hides the panels, `?zoom=2.5` sets the zoom, `?center=<x>,<y>` points the camera at a tile and `?follow=<npc id>` follows a villager.
@@ -218,7 +216,7 @@ and one way of talking ("speaks only in riddles"); both show in the NPC panel.
   other. Bonsai calls run in the background: an NPC shows 💭 while it waits, and everyone else
   carries on. At most `--llm-budget` (default 2) decision calls and 3 conversations are in flight at once.
 * **World time.** Hunger, energy, ageing and regrowth advance once every `decay_every` = 3 ticks
-  (the optional 5th `INIT` argument), so survival balance holds with multi-tick actions.
+  (`SimConfig.decay_every`), so survival balance holds with multi-tick actions.
 * **Map.** The default is 80x56 with 16 settlers (`--width/--height/--population`). The view is a
   camera: drag to pan, scroll to zoom, WASD or arrow keys, click an NPC to follow it.
 * Speech bubbles fade 24 ticks (~3.5 s) after they appear, which is the PRD's "4 ticks" rescaled for the shorter tick.
@@ -226,7 +224,7 @@ and one way of talking ("speaks only in riddles"); both show in the NPC panel.
 </details>
 
 <details>
-<summary><b>Game rules:</b> tunable constants at the top of both engine files</summary>
+<summary><b>Game rules:</b> everything is declared in <code>orchestrator/genesis/engine/defs.py</code></summary>
 
 Times below are in units of world time (one unit every `decay_every` = 3 ticks).
 
@@ -280,7 +278,7 @@ URL options: `?zoom=2.5` sets the starting zoom, `?follow=<npc id>` follows an N
 3. All NPCs are inferred concurrently (llama-server batches them with `--parallel`).
 4. NPCs that chose **Interact** run the secondary sequence: ChromaDB recall for that
    pair → option + dialogue line → the target consents (trade/mate) or refuses.
-5. `STEP id:action:option …` goes to the engine, which resolves movement, combat
+5. The chosen indices (`{npc: (action, option)}`) go to the engine, which resolves movement, combat
    RNG, trades, hut placement and births, then decays stats.
 6. Events become memories (attacks −4, trades +2, births +3 …) that make grudges and alliances.
 7. A frame (tiles, NPCs, emojis, dialogue, chronicle) is broadcast to the UI.
@@ -288,21 +286,40 @@ URL options: `?zoom=2.5` sets the starting zoom, `?follow=<npc id>` follows an N
 </details>
 
 <details>
-<summary><b>Engine protocol</b></summary>
+<summary><b>The engine and adding content</b></summary>
 
-One command per line on stdin, one JSON object per line on stdout:
+The rules live in `orchestrator/genesis/engine/`, a plain Python package:
 
+| File | What it holds |
+|---|---|
+| `defs.py` | The content registry: terrain, objects (resources and buildings), items, recipes, actions, interaction options, events, and every tuning constant |
+| `world.py` | The layered world (terrain + objects standing on it), NPC bookkeeping, world time, and `World.apply` for changes from outside the rules |
+| `actions.py` | One `@offers` / `@runs` handler pair per action, one `@option` per interaction |
+| `mapgen.py` | Map presets (`MAPS`) and where the first settlers start |
+| `path.py` | Path-finding: one flood per NPC finds every destination it is offered |
+
+```python
+engine = Engine()
+state = engine.init(seed, width, height, population)
+state = engine.step({npc_id: (action_index, option_index)})
+state = engine.apply([{"op": "give", "npc": 1, "item": "food", "n": 3}])
 ```
-INIT <seed> <width> <height> <npcs>
-STATE
-STEP <id>:<action-index>[:<interact-option-index>] ...
-QUIT
-```
 
-`orchestrator/genesis/engine_py.py` is a line-for-line Python mirror of
-`engine/src/main.cpp` (same SplitMix64 RNG and call order). `tests/test_genesis.py`
-asserts that both produce identical states over 1,500 ticks of random actions,
-so **any rule change must be made in both files**.
+Everything random goes through one seeded SplitMix64 generator, so a seed and a
+sequence of choices always give the same world (`test_same_seed_same_story`).
+
+**Adding content**
+
+* *A building or resource* is one `ObjectDef` in `defs.py`. Cost, harvest, regrowth and the
+  bonuses it gives an NPC standing next to it (sleep, healing, cooking) are data, so the engine,
+  the LLM prompt, the stats panel, the chronicle and the terminal view pick it up without more code.
+* *An action* is an `ActionDef` in `defs.py`, a handler pair in `actions.py`, and a scorer in
+  `brain.py` for the heuristic brain. A missing piece fails at import time, not mid-game.
+* *An interaction option* is an `InteractionDef` plus an `@option` handler.
+* *A map* is one function in `mapgen.py` registered in `MAPS`.
+
+The web front end receives the registry once per connection (`{"type": "defs"}`) and reads
+labels, icons and counters from it.
 
 </details>
 
@@ -318,10 +335,9 @@ npm install                                  # Tauri CLI
 Output: `src-tauri\target\release\bundle\nsis\Project Genesis_0.1.0_x64-setup.exe`
 (also runnable in place: `src-tauri\target\release\genesis.exe`).
 
-Needs Rust (rustup, MSVC toolchain), the VS 2022 C++ Build Tools and WebView2 (built into Windows 11).
-At launch Tauri starts `orchestrator.exe --port 8765 --parent-pid <app pid>`; the
-orchestrator starts `engine.exe` from the same folder. Closing the window kills the
-orchestrator, and its parent-PID watchdog also exits it if the app is killed outright.
+Needs Rust (rustup, MSVC toolchain, which needs the VS 2022 C++ Build Tools) and WebView2 (built into Windows 11).
+At launch Tauri starts `orchestrator.exe --port 8765 --parent-pid <app pid>`, which runs the
+engine and the brains in one process. Closing the window kills the orchestrator, and its parent-PID watchdog also exits it if the app is killed outright.
 Port 8765 must be free (stop any `genesis.server` dev instance first).
 
 </details>

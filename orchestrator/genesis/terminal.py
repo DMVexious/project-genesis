@@ -15,29 +15,32 @@ import time
 
 from .brain import action_grammar, action_prompt, interaction_grammar
 from .config import add_sim_args, build_sim
+from .engine.defs import BUILDINGS, GLYPHS
 
-TILE_GLYPH = {".": ("·", "33"), "#": ("▲", "90"), "T": ("♣", "32"), "s": ("‚", "33"),
-              "B": ("✿", "35"), "b": ("✽", "90"), "H": ("⌂", "93")}
 NPC_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"
+UNKNOWN_TILE = ("?", "37")
 
 
 def render(frame: dict, recent: list[str]) -> str:
-    grid = [[f"\x1b[{c}m{g}\x1b[0m" for g, c in (TILE_GLYPH[t] for t in row)] for row in frame["tiles"]]
+    grid = [[f"\x1b[{c}m{g}\x1b[0m" for g, c in (GLYPHS.get(t, UNKNOWN_TILE) for t in row)]
+            for row in frame["tiles"]]
     for n in frame["npcs"]:
         ch = NPC_CHARS[n["id"] % len(NPC_CHARS)]
         color = "31" if not n["alive"] else "97;1"
         grid[n["y"]][n["x"]] = f"\x1b[{color}m{ch}\x1b[0m"
     s = frame["stats"]
+    built = "  ".join(f"{b.stat} {s[b.stat]}" for b in BUILDINGS if b.stat in s)
     out = [f"Genesis  tick {frame['tick']}  pop {s['population']}  births {s['births']}  deaths {s['deaths']}  "
-           f"huts {s['huts']}  fights {s['fights']}  trades {s['trades']}  gen {s['max_generation']}  "
-           f"[{frame['engine']}/{frame['brain']}/{frame['memory']}]"]
+           f"{built}  fights {s['fights']}  trades {s['trades']}  gen {s['max_generation']}  "
+           f"[{frame['brain']}/{frame['memory']}]"]
     out += ["".join(r) for r in grid]
     out.append("")
     for n in sorted(frame["npcs"], key=lambda n: n["id"]):
         ch = NPC_CHARS[n["id"] % len(NPC_CHARS)]
-        t = n["traits"]
+        t, inv = n["traits"], n["inv"]
         out.append(f" {ch} {n['name']:<10} hp{n['health']:>3} fd{n['hunger']:>3} en{n['energy']:>3} "
-                   f"so{n['social']:>3} w{n['wood']:>2} f{n['food']:>2}{'⚔' if n['spear'] else ' '} "
+                   f"so{n['social']:>3} w{inv.get('wood', 0):>2} f{inv.get('food', 0):>2}"
+                   f"{'⚔' if inv.get('spear') else ' '} "
                    f"{n['status'] or ' '}{n['emoji'] or ' '} {t['aggression'][:5]}/{t['work'][:5]}/{t['social'][:5]}"
                    f"  {n['intent']}")
     for d in frame["dialogue"]:
