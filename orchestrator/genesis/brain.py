@@ -260,6 +260,41 @@ def reply_prompt(ix: Interaction, heard: str, option: str) -> list[dict]:
     ]
 
 
+def chat_prompt(ix: Interaction, history: list[tuple[str, str]], json_turns: bool = False) -> list[dict]:
+    """``ix.me`` is chatting with ``ix.other`` and it is their turn. ``history`` is the
+    conversation so far as (name, line), oldest first; the last line is the other's.
+
+    The conversation goes in as real chat turns (their lines as the user, ours as
+    the assistant): small models follow a back-and-forth far better that way than
+    from a list inside one message. ``json_turns`` writes our own past turns in the
+    JSON shape the answer must take (for backends that force JSON output)."""
+    me, other = ix.me, ix.other
+    them = f"{other.name}, {'an elder' if other.elder else 'a kid' if other.stats.get('age', 99) < MATURE_AGE else 'a grown-up'}"
+    if role_name(other.stats):
+        them += f", known as a {role_name(other.stats)}"
+    mood = {"fine": "", "in the mood for a chat": " You're in the mood for a chat."}.get(
+        current_mood(me.stats), f" Right now you're {current_mood(me.stats)}.")
+    feeling = "You can't stand them." if ix.grudge <= -2 else "You like them." if ix.grudge >= 2 else ""
+    known = (" What you remember about them: " + " ".join(ix.memories[-3:])) if ix.memories else ""
+    system = (dialogue_system_prompt(me) +
+              f"\nYou're talking face to face with {them}.{mood} {feeling}{known}\n"
+              "Have a real conversation: answer what they actually just said (if they ask something, answer it), "
+              "say something new each time, ask them things back. Never repeat a line you already said. "
+              f"Keep each line short and casual (under {MAX_WORDS} words). "
+              "When you want to end it (bored, busy, hungry, tired, upset, or it has run its course), say a "
+              "goodbye and choose leave; otherwise choose stay.")
+    messages = [{"role": "system", "content": system}]
+    for who, said in history:
+        if who == me.name:
+            content = json.dumps({"line": said, "leave": False}) if json_turns else f"stay | {said}"
+            messages.append({"role": "assistant", "content": content})
+        else:
+            messages.append({"role": "user", "content": said})
+    if messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": "(says nothing, waits for you)"})
+    return messages
+
+
 def sky_prompt(v: NpcView, heard: str, memories: list[str], news: list[str]) -> list[dict]:
     """A voice from the sky (the player, as a god) speaks to ``v``, who must answer."""
     payload = {
@@ -310,6 +345,8 @@ def interaction_grammar(options: list[str]) -> str:
 CONSENT_GRAMMAR = 'root ::= "yes" | "no"\n'
 REPLY_GRAMMAR = (f"root ::= word (\" \" word){{0,{MAX_WORDS - 1}}}\n"
                  "word ::= [A-Za-z',.!?-]{1,16}\n")
+CHAT_GRAMMAR = (f"root ::= (\"stay\" | \"leave\") \" | \" word (\" \" word){{0,{MAX_WORDS - 1}}}\n"
+                "word ::= [A-Za-z',.!?-]{1,16}\n")
 
 
 def _trigrams(text: str) -> set[tuple[str, ...]]:
@@ -320,6 +357,15 @@ def _trigrams(text: str) -> set[tuple[str, ...]]:
 _EXAMPLE_TRIGRAMS = [_trigrams(line) for _, line in BELIEFS]
 _BANNED_RE = re.compile(r"\b(?:" + "|".join(re.escape(b) for b in BANNED) + r")\b")
 _CASUAL_TRIGRAMS =set().union(*(_trigrams(line) for line in CASUAL))
+
+
+MIN_CHAT_LINES = 3  # lines someone says in a conversation before they may choose to leave it
+
+
+def repeats(line: str, earlier: list[str]) -> bool:
+    """Whether a line says again what one of ``earlier`` already said."""
+    tri, low = _trigrams(line), line.strip().lower()
+    return any(low == e.strip().lower() or (tri and len(tri & _trigrams(e)) * 2 >= len(tri)) for e in earlier)
 
 
 class Canned(str):
@@ -407,6 +453,9 @@ REPLIES = {
     "odd": ["Uh... okay?", "What? Say that again.", "You're weird, you know that?", "...why are you telling me this?"],
     "yes": ["Yeah, okay. Deal.", "Alright, let's do it.", "Fine by me."],
     "thanks": ["Oh. Thanks, really.", "You sure? Okay. Thanks.", "Huh. I owe you one."],
+    "bye": ["Anyway, I gotta go.", "Right. I'm off.", "Later.", "Okay, enough talk. Bye.",
+            "I've got stuff to do. See you."],
+    "busy_bye": ["Sorry, I really need to eat.", "I'm dead on my feet. Gotta sleep.", "Can't talk now, I'm starving."],
     "sky": ["Who said that?!", "Okay... I'm hearing voices now. Great.", "Is that you, sky? What do you want?",
             "I'm not listening. La la la.", "Fine, fine. I heard you.", "Please don't smite me."],
     "no_trade": ["Nah, I'm good.", "No deal.", "Not today."],
@@ -632,6 +681,17 @@ class HeuristicBrain:
     async def answer_sky(self, v: NpcView, heard: str, memories: list[str], news: list[str]) -> str:
         return Canned(self.rng.choice(REPLIES["sky"]))
 
+    async def chat(self, ix: Interaction, history: list[tuple[str, str]]) -> tuple[str, bool]:
+        """The next line in a conversation, and whether to walk away after it."""
+        feeling = current_mood(ix.me.stats)
+        if feeling in ("starving", "exhausted", "hurt and in pain"):
+            return Canned(self.rng.choice(REPLIES["busy_bye"])), True
+        mine = sum(1 for who, _ in history if who == ix.me.name)
+        patience = {"Charismatic": 7, "Loner": 2, "Paranoid": 3}.get(ix.me.genome.social, 4)
+        if mine >= patience + self.rng.randrange(3) or (ix.grudge <= -2 and self.rng.random() < 0.4):
+            return Canned(self.rng.choice(REPLIES["bye"])), True
+        return Canned(await self._reply(ix, history[-1][1] if history else "", "talk")), False
+
     def option_weight(self, ix: Interaction, option: str) -> float:
         """How much this NPC feels like doing ``option`` with the other one."""
         g, me, them = ix.me.genome, ix.me.stats, ix.other.stats
@@ -812,6 +872,28 @@ class LlamaBrain:
         """One spoken line, free-form (under MAX_WORDS words)."""
         return await self._complete(messages, REPLY_GRAMMAR, 40, self.talk_temperature)
 
+    async def _chat_line(self, messages: list[dict]) -> tuple[str, bool]:
+        out = await self._complete(messages, CHAT_GRAMMAR, 48, self.talk_temperature)
+        choice, _, line = out.partition("|")
+        return line, choice.strip() == "leave"
+
+    json_turns = False  # (see chat_prompt)
+
+    async def chat(self, ix: Interaction, history: list[tuple[str, str]]) -> tuple[str, bool]:
+        mine = [said for who, said in history if who == ix.me.name]
+        try:
+            for _ in range(3):  # re-roll a line that comes out bland, or that they already said
+                line, leave = await self._chat_line(chat_prompt(ix, history, self.json_turns))
+                if not is_generic(line, ix.me.persona.get("belief", -1)) and not repeats(line, mine):
+                    break
+            # Small models choose "leave" far too eagerly: someone who has only just started
+            # talking stays, unless something is really wrong (starving, hurt, a grudge).
+            urgent = current_mood(ix.me.stats) in ("starving", "exhausted", "hurt and in pain") or ix.grudge <= -2
+            return spoken(line), leave and (urgent or len(mine) >= MIN_CHAT_LINES)
+        except Exception as e:
+            self._failed("chat", e)
+            return await self.fallback.chat(ix, history)
+
     async def answer_sky(self, v: NpcView, heard: str, memories: list[str], news: list[str]) -> str:
         try:
             for _ in range(2):
@@ -951,6 +1033,14 @@ class OllamaBrain(LlamaBrain):
         except Exception as e:
             self._failed("reply", e)
             return await self.fallback.reply(ix, heard, option)
+
+    json_turns = True  # (Ollama forces JSON answers: show our past turns in that shape too)
+
+    async def _chat_line(self, messages: list[dict]) -> tuple[str, bool]:
+        schema = {"type": "object", "required": ["line", "leave"],
+                  "properties": {"line": {"type": "string"}, "leave": {"type": "boolean"}}}
+        out = await self._chat(messages, schema, 72, self.talk_temperature)
+        return str(out["line"]), bool(out["leave"])
 
     async def _line(self, messages: list[dict]) -> str:
         schema = {"type": "object", "required": ["line"], "properties": {"line": {"type": "string"}}}

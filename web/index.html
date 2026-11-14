@@ -79,6 +79,12 @@
           <span class="hint">click the ground to walk · click someone to talk or hit · WASD steps</span>
           <button id="pb-leave" title="Leave the body (Esc)">Leave body</button>
         </div>
+        <div id="pb-chat" hidden>
+          <div class="pbc-head"><b>💬 Talking with <span id="pbc-name"></span></b><span id="pbc-wait" class="hint"></span>
+            <span class="pb-space"></span><button id="pbc-end" type="button" title="Stop talking (or just walk away)">End chat</button></div>
+          <div id="pbc-log"></div>
+          <form id="pbc-form"><input id="pbc-text" maxlength="240" autocomplete="off" placeholder="Say something…"><button>Send</button></form>
+        </div>
         <div id="pb-heard" hidden>
           <div id="pb-heard-line"></div>
           <form id="pb-answer"><input id="pb-answer-text" maxlength="240" autocomplete="off" placeholder="Your answer…">

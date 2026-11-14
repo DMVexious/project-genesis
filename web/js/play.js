@@ -47,6 +47,7 @@ export function renderPlayer(f) {
   }
   $("pb-name").textContent = p.name;
   renderHeard(p.incoming);
+  renderChat(p.chat);
   $("pb-note").textContent = p.note || (p.order === "walk" ? "walking…" : p.order === "interact" ? "on the way…" : "");
   const acts = p.actions.filter((a) => a.kind !== "interact");
   const sig = acts.map((a) => `${a.kind}:${a.action.what || ""}`).join("|");
@@ -59,6 +60,27 @@ export function renderPlayer(f) {
   }
   if (interactFor != null) fillInteract();  // (what you can do with them changes as you get close)
   return was !== p.id;  // (true: just became someone)
+}
+
+// --- the conversation you're in ------------------------------------------------------------
+let chatWith = null, chatSig = "";
+function renderChat(c) {
+  $("pb-chat").hidden = !c;
+  if (!c) { chatWith = null; chatSig = ""; return; }
+  if (chatWith !== c.with) {  // a new conversation: put the cursor in the box
+    chatWith = c.with;
+    $("pbc-text").value = "";
+    setTimeout(() => $("pbc-text").focus(), 0);
+  }
+  $("pbc-name").textContent = c.name;
+  $("pbc-wait").textContent = c.waiting ? `${c.name} is thinking…` : "";
+  const sig = JSON.stringify(c.lines);
+  if (sig !== chatSig) {
+    chatSig = sig;
+    $("pbc-log").innerHTML = c.lines.map((l) =>
+      `<div class="pbc-line ${l.me ? "me" : ""}"><b>${esc(l.who)}:</b> ${esc(l.text)}</div>`).join("");
+    $("pbc-log").scrollTop = $("pbc-log").scrollHeight;
+  }
 }
 
 // --- someone is speaking to you --------------------------------------------------------
@@ -154,6 +176,14 @@ export function initPlay() {
     if ($("ia-text").value.trim()) doInteract("talk");
   });
   $("ia-close").onclick = closeInteract;
+  $("pbc-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("pbc-text").value.trim();
+    if (!text) return;
+    send({ cmd: "chat", text });
+    $("pbc-text").value = "";
+  });
+  $("pbc-end").onclick = () => send({ cmd: "chat_end" });
   $("pb-answer").addEventListener("submit", (e) => { e.preventDefault(); answer(false); });
   $("pb-yes").onclick = () => answer(true);
   $("pb-no").onclick = () => answer(false);

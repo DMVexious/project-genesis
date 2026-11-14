@@ -174,6 +174,16 @@ class Hub:
         self.sim.command(msg.get("order"))
         return False
 
+    async def _cmd_chat(self, msg, ws):
+        """{"cmd": "chat", "text": "..."}: say something in the conversation you're in."""
+        self.sim.chat_say(str(msg.get("text", "")))
+        return False
+
+    async def _cmd_chat_end(self, msg, ws):
+        """End the conversation you're in."""
+        self.sim.end_chat()
+        return False
+
     async def _cmd_answer(self, msg, ws):
         """{"cmd": "answer", "text": "...", "accept": bool}: answer whoever is speaking to your body."""
         self.sim.answer(str(msg.get("text", "")), bool(msg.get("accept", False)))

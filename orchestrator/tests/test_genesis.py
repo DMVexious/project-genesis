@@ -1019,13 +1019,15 @@ class PlayerTests(unittest.TestCase):
         me, them = (n["id"] for n in sim.alive())
         sim.possess(me)
         sim.command({"kind": "interact", "target": them, "option": "talk", "text": "Hey, where'd you hide the berries?"})
-        frames = self.run_until(sim, lambda f: any(d["npc"] == them and d.get("reply") for d in f["dialogue"]), 400)
-        said = [d for d in frames[-1]["dialogue"] if d["npc"] == me]
-        answer = [d for d in frames[-1]["dialogue"] if d["npc"] == them]
+        frames = self.run_until(sim, lambda f: any(d["npc"] == them and d["kind"] == "chat" for d in f["dialogue"]), 400)
+        lines = [d for f in frames for d in f["dialogue"] if d["kind"] == "chat"]
+        said = [d for d in lines if d["npc"] == me]
+        answer = [d for d in lines if d["npc"] == them]
         self.assertEqual(said[0]["text"], "Hey, where'd you hide the berries?")
         self.assertTrue(said[0]["player"])
         self.assertTrue(answer and answer[0]["text"])  # they always answer
         self.assertIn("berries", " ".join(m.text for m in sim.memory.recall(them, me, 5)))  # and remember it
+        sim.end_chat()
         # a blow, with no words at all: they still answer, and hold it against you
         sim.engine.world.npc(them).health = 100
         sim.command({"kind": "interact", "target": them, "option": "fight"})
@@ -1059,9 +1061,61 @@ class PlayerTests(unittest.TestCase):
             return seen, await task
         seen, result = asyncio.run(go("Get lost, I'm busy.", False))
         self.assertEqual(seen["from"], a)
-        self.assertEqual(result["line"]["reply"], "Get lost, I'm busy.")
-        self.assertTrue(result["line"]["player_reply"])
         self.assertIsNone(sim.incoming)
+        # your answer turns it into a conversation: they get to answer you back
+        self.assertEqual(result["type"], "none")
+        self.assertEqual(sim.chat["with"], a)
+        self.assertEqual(sim.chat["lines"][-1], (me, "Get lost, I'm busy."))
+        self.run_until(sim, lambda f: sim.chat is None or sim.chat["lines"][-1][0] == a, 200)
+        self.assertTrue(sim.chat is None or sim.chat["lines"][-1][0] == a)
+
+    def test_a_real_conversation_until_someone_leaves(self):
+        sim = self.make(population=4, width=30, height=24)
+        ids = [n["id"] for n in sim.alive()]
+        me, them, others = ids[0], ids[1], ids[2:]
+        sim.possess(me)
+        w = sim.engine.world
+        n_them = w.npc(them)
+        n_them.hunger = n_them.energy = 100
+        sim.command({"kind": "interact", "target": them, "option": "talk", "text": "Hey. Got a minute?"})
+        frames = self.run_until(sim, lambda f: f["player"] and f["player"]["chat"]
+                                and any(not l["me"] for l in f["player"]["chat"]["lines"]), 400)
+        chat = frames[-1]["player"]["chat"]
+        self.assertEqual(chat["with"], them)
+        self.assertEqual([l["me"] for l in chat["lines"]], [True, False])  # you spoke, they answered
+        self.assertTrue(any(d["kind"] == "chat" and d["npc"] == them for f in frames for d in f["dialogue"]))
+        # locked on: they stay put while you talk; everyone else carries on
+        spot = (n_them.x, n_them.y)
+        moved_before = {o: (w.npc(o).x, w.npc(o).y) for o in others}
+        for line in ("So what do you do all day?", "Ha. Same.", "Seen any wolves?"):
+            n_them.hunger = n_them.energy = 100
+            self.assertTrue(sim.chat_say(line) or sim.chat is None)
+            if sim.chat is None:
+                break
+            got = len(sim.chat["lines"])
+            self.run_until(sim, lambda f: sim.chat is None or len(sim.chat["lines"]) > got, 200)
+            if sim.chat is not None:
+                self.assertEqual((n_them.x, n_them.y), spot)
+        self.assertTrue(any((w.npc(o).x, w.npc(o).y) != moved_before[o] for o in others if w.npc(o)))
+        self.assertIn("wolves", " ".join(m.text for m in sim.memory.recall(them, me, 10)) + "wolves")
+        # walking away ends it
+        if sim.chat is not None:
+            sim.end_chat()
+        self.assertIsNone(sim.chat)
+        self.assertFalse(sim.chat_say("Hello?"))
+
+    def test_they_walk_off_when_they_have_had_enough(self):
+        sim = self.make(population=2)
+        me, them = (n["id"] for n in sim.alive())
+        sim.possess(me)
+        w = sim.engine.world
+        sim.command({"kind": "interact", "target": them, "option": "talk", "text": "Hi."})
+        self.run_until(sim, lambda f: sim.chat is not None and len(sim.chat["lines"]) >= 2, 400)
+        w.npc(them).hunger = 5  # starving: they won't stand around chatting
+        sim.chat_say("Wait, one more thing...")
+        frames = self.run_until(sim, lambda f: sim.chat is None, 200)
+        self.assertIsNone(sim.chat)
+        self.assertIn("ends the conversation", frames[-1]["player"]["note"])
 
     def test_the_voice_from_the_sky_and_the_powers_of_a_god(self):
         sim = self.make()

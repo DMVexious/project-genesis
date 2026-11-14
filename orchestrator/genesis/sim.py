@@ -52,6 +52,9 @@ class NpcMeta:
 PLAYER_WORDS = 30         # the most a player's line may run to
 PLAYER_WAIT = 150         # ticks a player's conversation may take before it is dropped
 ANSWER_SECONDS = 25.0     # how long a villager waits for the player to answer them
+CHAT_IDLE = 110           # ticks (~25 s) of silence from the player before the other one wanders off
+CHAT_REACH = 2            # how far apart the two may get before the conversation is over
+CHAT_KEEP = 12            # lines of the conversation the other one keeps in mind (and the player sees)
 WALK_LIMIT = 400          # how far (in steps) the player's "walk there" looks for a way
 GOD_POWERS = ("heal", "feed", "smite")
 
@@ -148,6 +151,10 @@ class Simulation:
         # someone speaking to the player's body, waiting for the player to answer:
         # {"from": id, "said": str, "option": str, "consent": bool, "reply": Future}
         self.incoming: dict | None = None
+        # a conversation between the player's body and someone else, until one of them leaves:
+        # {"with": id, "lines": [(speaker id, text)], "last": tick, "ask": bool, "task": Future | None}
+        self.chat: dict | None = None
+        self.chat_out: list[dict] = []                  # chat lines to show in the next frame
         self.voice_asks: list[tuple[int, str]] = []     # what the voice from the sky said, to whom
         self.voices: list[asyncio.Future] = []          # answers to it, being written
         self.voice_lines: list[dict] = []               # ...and those ready to show
@@ -290,6 +297,7 @@ class Simulation:
                 # rare enough to be worth interrupting for.)
                 cooling = (now - self.last_talk.get(nid, -10**9) < self.cfg.talk_cooldown
                            and "mate" not in act["options"] and sources.get(nid) != "llm")
+                cooling = cooling or (self.chat is not None and act["target"] in (self.chat["with"], self.possessed))
                 crowded = now - self.last_any_talk < self.cfg.talk_gap
                 # Every line should be the LLM's: with no free LLM slot the NPC does something
                 # else instead of saying a canned line. (If the LLM is down altogether, canned
@@ -365,6 +373,7 @@ class Simulation:
         log_lines = self.god_log + self._process_events(self.state["events"], lines, now)
         self.god_log = []
         self._collect_voices(now)
+        self._run_chat(now, living)
         for line in log_lines:
             if " talks to " not in line and line not in self.quiet:
                 self.news.append(line.lstrip(LOG_EMOJI + "️ ").strip())
@@ -397,6 +406,7 @@ class Simulation:
     def release(self):
         if self.possessed is None:
             return
+        self.end_chat(quiet=True)
         self.enqueue({"op": "control", "npc": self.possessed, "on": False})
         if self.incoming is not None and not self.incoming["reply"].done():
             self.incoming["reply"].set_result({"text": "", "accept": False})
@@ -520,6 +530,11 @@ class Simulation:
             if option is None:
                 self._note(now, f"You can't {order['option']} with {self.meta[target['id']].name} right now.")
                 return
+            if base_option(option) == "talk" and order["text"]:  # words: that is a conversation
+                if self.chat is None or self.chat["with"] != target["id"]:
+                    self._open_chat(target["id"], [], now)
+                self.chat_say(order["text"])
+                return
             self._spawn(nid, self._player_interaction(v, act, option, order["text"]), "interact")
             self.listening_to[nid] = target["id"]
             self.last_talk[nid] = now
@@ -568,9 +583,119 @@ class Simulation:
             self.memory.log(Memory(me.id, player.id, self.state["tick"], "refused",
                                    f"{player.name} refused to {what} with me.", -1))
             option = "talk"
+        if key == "talk" and answer.get("text") and self.possessed == player.id:
+            # they spoke, you answered: now it's a conversation, and they answer you back
+            self._open_chat(me.id, [(me.id, said)] if said else [], self.state["tick"], said_llm)
+            self.chat_say(answer["text"])
+            return {"type": "none", "source": source}
         return {"type": "interact", "action": act, "option": option, "source": source,
                 "line": {"npc": me.id, "target": player.id, "text": said, "reply": answer.get("text", ""),
                          "llm": said_llm, "reply_llm": False, "player_reply": True}}
+
+    # --- conversations with the player -----------------------------------------------
+    # Once the player speaks to someone, the two are locked on: the other one stops
+    # what they are doing and answers every line, with the whole conversation in
+    # mind, until one of them leaves. They may leave when they like (bored, upset,
+    # hungry...); the player leaves by walking off or ending it. Everyone else
+    # carries on with their lives meanwhile.
+
+    def _open_chat(self, partner: int, lines: list[tuple[int, str]], tick: int, first_llm: bool = False):
+        if self.chat is not None:
+            self.end_chat(quiet=True)
+        self.chat = {"with": partner, "lines": [], "last": tick, "ask": False, "task": None}
+        self.plans.pop(partner, None)
+        task = self.pending.get(partner)
+        if task is not None and task is not asyncio.current_task():  # (whatever it was thinking about can wait)
+            self.pending.pop(partner).cancel()
+            self.pending_since.pop(partner, None)
+        for who, text in lines:
+            self._chat_line(who, text, tick, llm=first_llm)
+
+    def _chat_line(self, who: int, text: str, tick: int, llm: bool = False):
+        """Someone in the conversation says something: it is shown, and both remember it."""
+        c = self.chat
+        other = c["with"] if who == self.possessed else self.possessed
+        c["lines"].append((who, text))
+        del c["lines"][:-CHAT_KEEP]
+        c["last"] = tick
+        nm = self.meta[who].name
+        self._remember(who, other, tick, "talk", f'I told {self.meta[other].name}: "{text}"', 1)
+        self._remember(other, who, tick, "talk", f'{nm} told me: "{text}"', 1)
+        self.chat_out.append({"npc": who, "target": other, "text": text, "tick": tick, "kind": "chat",
+                              "llm": llm, "player": who == self.possessed})
+
+    def chat_say(self, text: str) -> bool:
+        """The player says something in the conversation; the other one will answer."""
+        c = self.chat
+        text = clamp_words(str(text).strip(), PLAYER_WORDS)
+        if c is None or not text or self.possessed is None:
+            return False
+        if c["task"] is not None and not c["task"].done():
+            self._note(self.state["tick"], f"{self.meta[c['with']].name} is still answering.")
+            return False
+        self._chat_line(self.possessed, text, self.state["tick"])
+        c["ask"] = True
+        self.enqueue({"op": "train", "npc": self.possessed, "skill": "speech", "xp": 2})
+        return True
+
+    def end_chat(self, quiet: bool = False, note: str = ""):
+        c, self.chat = self.chat, None
+        if c is None:
+            return
+        if c["task"] is not None:
+            c["task"].cancel()
+        self.busy_until.pop(c["with"], None)  # free to go about their life again
+        if note:
+            self._note(self.state["tick"], note)
+        elif not quiet and c["with"] in self.meta:
+            self._note(self.state["tick"], f"You stop talking to {self.meta[c['with']].name}.")
+
+    async def _chat_reply(self, partner: dict, player: dict, lines: list[tuple[int, str]]) -> tuple[str, bool, bool]:
+        me, other = self.view(partner, actions=False), self.view(player, actions=False)
+        recalled = await self._recall(me.id, other.id)
+        ix = Interaction(me, other, ["talk"], [m.text for m in recalled], self.memory.grudge(me.id, other.id),
+                         list(self.news))
+        history = [(self.meta[who].name, text) for who, text in lines]
+        brain = self.brain if hasattr(self.brain, "chat") else self.reflex
+        line, leave = await brain.chat(ix, history)
+        return clamp_words(line), leave, not isinstance(line, Canned)
+
+    def _run_chat(self, now: int, living: dict):
+        c = self.chat
+        if c is None:
+            return
+        pid, oid = self.possessed, c["with"]
+        if pid is None or pid not in living or oid not in living:
+            self.end_chat(quiet=True)
+            return
+        me, them = living[pid], living[oid]
+        name = self.meta[oid].name
+        if max(abs(me["x"] - them["x"]), abs(me["y"] - them["y"])) > CHAT_REACH:
+            self._remember(oid, pid, now, "talk", f"{self.meta[pid].name} just walked off while we were talking.", -1)
+            self.end_chat(note=f"You walked away from {name}.")
+            return
+        task = c["task"]
+        if task is not None and task.done():
+            c["task"] = None
+            if not task.cancelled() and task.exception() is None:
+                line, leave, llm = task.result()
+                if line:
+                    self._chat_line(oid, line, now, llm=llm)
+                if leave:
+                    self.end_chat(note=f"{name} ends the conversation.")
+                    return
+        elif task is None and c["ask"]:
+            c["ask"] = False
+            c["task"] = asyncio.ensure_future(self._chat_reply(them, me, list(c["lines"])))
+        elif task is None and now - c["last"] > CHAT_IDLE:
+            self._chat_line(oid, self.reflex.rng.choice(["Okay... I'll be going then.", "Hello? Fine, I'm off.",
+                                                         "You've gone quiet. See you."]), now)
+            self.end_chat(note=f"{name} got bored of waiting and left.")
+            return
+        # locked on: they stand and talk (everyone else carries on)
+        self.busy_until[oid] = now + 2
+        self.busy_from[oid] = now
+        self.activity[oid] = "chat"
 
     def answer(self, text: str, accept: bool = False) -> bool:
         """The player's answer to whoever is speaking to their body."""
@@ -650,7 +775,13 @@ class Simulation:
         inc = self.incoming
         heard = None if inc is None else {"from": inc["from"], "name": names.get(inc["from"], "?"), "said": inc["said"],
                                           "want": inc["want"], "consent": inc["consent"]}
-        return {"id": pid, "name": self.meta[pid].name, "actions": acts, "incoming": heard,
+        c = self.chat
+        chat = None if c is None else {
+            "with": c["with"], "name": self.meta[c["with"]].name,
+            "lines": [{"me": who == pid, "who": "You" if who == pid else self.meta[who].name, "text": text}
+                      for who, text in c["lines"]],
+            "waiting": c["ask"] or (c["task"] is not None and not c["task"].done())}
+        return {"id": pid, "name": self.meta[pid].name, "actions": acts, "incoming": heard, "chat": chat,
                 "order": self.order["kind"] if self.order else "",
                 "note": self.note[1] if self.note and tick - self.note[0] < 25 else ""}
 
@@ -740,6 +871,8 @@ class Simulation:
                 del self.pending[nid]
                 self.pending_since.pop(nid, None)
                 if not task.cancelled() and task.exception() is None:
+                    if task.result().get("type") == "none":
+                        continue  # (it turned into something else, such as a conversation with the player)
                     self.ready[nid] = task.result()
                     if self.ready[nid]["source"] == "llm":
                         self._llm_backoff = 0  # LLM answers are arriving in time again
@@ -1089,6 +1222,8 @@ class Simulation:
                 status = "💭"
             elif n["asleep"] or resting or n["energy"] == 0:
                 status = "💤"
+            elif self.chat is not None and nid in (self.chat["with"], self.possessed):
+                status = "💬"  # in conversation with the player
             elif work is not None:  # mid-task: show the tool in hand
                 what = work["act"].get("what")
                 status = ((OBJECTS[what].emoji if what in OBJECTS else ITEMS[what].emoji if what in ITEMS else "")
@@ -1140,6 +1275,8 @@ class Simulation:
             dialogue.append({"npc": r["npc"], "target": -1, "text": r["reply"], "tick": tick, "kind": "voice",
                              "reply": True, "llm": r["llm"]})
         self.voice_lines = []
+        dialogue.extend(self.chat_out)  # lines of the player's conversation
+        self.chat_out = []
         world = getattr(self.engine, "world", None)
         frame = {
             "type": "frame", "tick": tick, "width": self.state["width"], "height": self.state["height"],

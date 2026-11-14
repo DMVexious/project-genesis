@@ -304,3 +304,13 @@ body.playing #modes, body.playing #godmenu, body.playing #god, body.playing #btn
 body.playing #stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
   box-shadow: inset 0 0 140px 30px rgba(10, 6, 2, .65); }
 body.playing #player-bar { box-shadow: 0 0 0 1px var(--accent), 0 6px 24px rgba(0, 0, 0, .5); }
+
+/* --- the conversation you're in ----------------------------------------------- */
+#pb-chat { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 6px; background: #2a3138; }
+#pb-chat[hidden] { display: none; }
+.pbc-head { display: flex; align-items: center; gap: 8px; }
+#pbc-log { max-height: 130px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.pbc-line.me { color: #9fd3ff; }
+#pbc-form { display: flex; gap: 4px; }
+#pbc-form input { flex: 1; min-width: 0; background: #15110d; color: var(--ink); border: 1px solid #4a3d30;
+  border-radius: 4px; padding: 4px 8px; font: inherit; font-size: 13px; }
