@@ -6,6 +6,7 @@ import { clearAnimals, renderAnimals } from "./animals.js";
 import { clearCull, cull } from "./cull.js";
 import { clearDrops, renderDrops } from "./drops.js";
 import { anim, newFx, playFx, poseSprite } from "./fx.js";
+import { endTool, hoverTile, useTool } from "./god.js";
 import { animateGround, buildGround, clearGround } from "./ground.js";
 import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
@@ -14,7 +15,7 @@ import { clearObjects, flickerFires, renderObjects } from "./objects.js";
 import { clearVillages, renderVillages } from "./villages.js";
 import { select } from "./panel.js";
 import { clearSky, renderSky, updateSky } from "./sky.js";
-import { villagerClick } from "./modes.js";
+import { currentMode, villagerClick } from "./modes.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
 import { state } from "./state.js";
@@ -31,10 +32,22 @@ export class WorldScene extends Phaser.Scene {
     const cam = this.cameras.main;
     cam.setZoom(Phaser.Math.Clamp(Number(params.get("zoom")) || START_ZOOM, MIN_ZOOM, MAX_ZOOM));  // ?zoom=2.5
 
-    // Drag to pan (a short press without movement counts as a click).
+    // Drag to pan (a short press without movement counts as a click). With a god's
+    // tool in hand, the left button uses it instead (and drags paint with it).
     let drag = null;
-    this.input.on("pointerdown", (p) => { drag = { x: p.x, y: p.y, moved: false }; });
+    this.input.mouse.disableContextMenu();
+    const toolOn = (p) => p.leftButtonDown() && currentMode() === "god" && !playing();
+    this.input.on("pointerdown", (p) => {
+      const at = cam.getWorldPoint(p.x, p.y);
+      drag = { x: p.x, y: p.y, moved: false, tool: toolOn(p) && useTool(this, at.x, at.y, true) };
+    });
     this.input.on("pointermove", (p) => {
+      if (currentMode() === "god") { const at = cam.getWorldPoint(p.x, p.y); hoverTile(this, at.x, at.y); }
+      if (drag && drag.tool && p.isDown) {
+        const at = cam.getWorldPoint(p.x, p.y);
+        useTool(this, at.x, at.y, false);
+        return;
+      }
       if (!drag || !p.isDown) return;
       const dx = p.x - p.prevPosition.x, dy = p.y - p.prevPosition.y;
       if (Math.abs(p.x - drag.x) + Math.abs(p.y - drag.y) > 5) drag.moved = true;
@@ -47,14 +60,15 @@ export class WorldScene extends Phaser.Scene {
     // A click on a villager: select them (or, while playing someone, open what you
     // can do with them). A click on the ground: while playing, walk there.
     this.input.on("gameobjectup", (p, obj) => {
-      if (!drag || drag.moved || !obj.npcId) return;
+      if (!drag || drag.moved || drag.tool || !obj.npcId) return;
       const c = this.game.canvas.getBoundingClientRect(), s = document.getElementById("stage").getBoundingClientRect();
       const sx = p.x * (c.width / this.scale.width) + c.left - s.left, sy = p.y * (c.height / this.scale.height) + c.top - s.top;
       if (playing()) { if (obj.npcId !== state.possessed) openInteract(obj.npcId, sx, sy); }
       else if (!villagerClick(obj.npcId, sx, sy)) select(obj.npcId);
     });
     this.input.on("pointerup", (p, over) => {
-      if (drag && !drag.moved && !(over && over.length) && p.button === 0) {
+      endTool();
+      if (drag && !drag.moved && !drag.tool && !(over && over.length) && p.button === 0) {
         const at = cam.getWorldPoint(p.x, p.y);
         groundClick(this, at.x, at.y);
       }

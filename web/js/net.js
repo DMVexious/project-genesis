@@ -1,6 +1,7 @@
 /* The WebSocket to the orchestrator. */
 import { $, WS_URL, params } from "./config.js";
-import { closeMenu, menuOpen, onPreview, openMenu, showModels } from "./menu.js";
+import { renderGodbar, toast } from "./god.js";
+import { closeMenu, menuOpen, onPreview, onSaves, openMenu, showModels } from "./menu.js";
 import { focus, renderFeeds, renderPanel, select } from "./panel.js";
 import { helpOnFirstVisit, syncMode } from "./modes.js";
 import { renderPlayer } from "./play.js";
@@ -27,6 +28,10 @@ export function connect() {
       state.defs = msg;
     } else if (msg.type === "preview") {
       onPreview(msg);
+    } else if (msg.type === "toast") {
+      toast(msg.text, msg.ok);
+    } else if (msg.type === "saves") {
+      onSaves(msg.saves);
     } else if (msg.type === "control") {
       state.control = msg;
       showModels();
@@ -65,6 +70,7 @@ export function connect() {
       if (changed) focus(state.possessed != null ? state.possessed : state.selected);  // the camera goes with the player
       syncMode();
       renderPanel(msg);
+      renderGodbar(msg);
       updateTimeline();
       if (params.has("follow") && state.selected === null && !state.followed) {  // ?follow=<npc id>
         state.followed = true;

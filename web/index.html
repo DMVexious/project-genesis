@@ -24,6 +24,7 @@
           <button data-power="smite" class="fight">⚡ Smite</button>
           <button data-power="heal">❤️ Heal</button>
           <button data-power="feed">🍖 Feed</button>
+          <button data-power="bless">✨ Bless</button>
           <button data-power="become">🎮 Become them</button>
         </div>
         <form id="gm-say"><input id="gm-text" maxlength="240" autocomplete="off" placeholder="Speak to them from the sky…"><button>🗣️ Say</button></form>
@@ -36,11 +37,14 @@
             <section><h3>👁 Watch <kbd>1</kbd></h3><ul>
               <li>Drag, or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>, to move around; scroll to zoom</li>
               <li>Click a villager to follow them and see their stats, skills and things</li>
-              <li><kbd>Space</kbd> pause · <kbd>M</kbd> minimap · <kbd>,</kbd> <kbd>.</kbd> replay</li>
+              <li><kbd>Space</kbd> pause · <kbd>+</kbd> <kbd>-</kbd> speed · <kbd>F</kbd> follow · <kbd>M</kbd> minimap · <kbd>,</kbd> <kbd>.</kbd> replay</li>
+              <li><kbd>Ctrl</kbd>+<kbd>S</kbd> quick save · 💾 in the panel to name a save · load from 🌍 New world</li>
               <li>Click someone to hear what they're doing (🔊)</li></ul></section>
             <section><h3>⚡ God <kbd>2</kbd></h3><ul>
-              <li>Click a villager to open the god menu</li>
-              <li>⚡ <b>Smite</b> them with lightning, ❤️ heal, 🍖 feed</li>
+              <li>The bar along the bottom has your powers: pick one, then <b>click the ground</b> (drag to paint trees, rocks, water...)</li>
+              <li>Rain, sun, storms, snow · buildings · settlers and animals · wildfires, migrants, festivals on demand</li>
+              <li>Right-drag moves the view while a power is in hand · <kbd>Esc</kbd> puts it down</li>
+              <li>Click a villager: ⚡ <b>smite</b>, ❤️ heal, 🍖 feed, ✨ bless</li>
               <li>Type in the box to <b>speak from the sky</b>: they always answer</li>
               <li>🎮 <b>Become them</b> to take over their body</li></ul></section>
             <section><h3>🎮 Play <kbd>3</kbd></h3><ul>
@@ -55,6 +59,12 @@
       <div id="minimap" title="The whole land. Click or drag to look elsewhere (M hides it)."><canvas id="minimap-canvas"></canvas></div>
       <div id="banner" hidden></div>
       <div id="clock" hidden title="The day, the season and the weather"></div>
+      <div id="godbar">
+        <div class="gb-top"><span id="gb-faith" hidden title="Faith pays for powers. It comes from believers (who heard your voice or saw a miracle), from prayers, and from shrines."></span><div id="gb-groups"></div></div>
+        <div id="gb-tools"></div>
+        <div id="gb-hint" class="hint"></div>
+      </div>
+      <div id="toast" hidden role="status"></div>
       <div id="news" hidden role="status"></div>
       <div id="menu" hidden>
         <div class="menu-card">
@@ -69,6 +79,15 @@
             <span class="menu-space"></span>
             <button id="menu-cancel">Back</button>
             <button id="menu-start" class="primary">Start</button>
+          </div>
+          <div class="menu-opts menu-mode">
+            <span>Play as</span>
+            <label title="Every power is free: shape the land however you like"><input type="radio" name="menu-mode" value="sandbox" checked> 🏖️ Sandbox</label>
+            <label title="Powers cost faith, which comes from believers, prayers and shrines"><input type="radio" name="menu-mode" value="deity"> 🙏 Deity <span class="hint">(powers cost faith)</span></label>
+          </div>
+          <div id="menu-saves" hidden>
+            <h3>Saved games</h3>
+            <ul id="menu-saves-list"></ul>
           </div>
           <div class="menu-opts menu-models" title="Local AI models (Ollama). Changes apply at once, even mid-game.">
             <label title="Decides what every villager does, many times a second: small and fast is best">🧠 Thinking
@@ -143,10 +162,12 @@
       <div class="controls">
         <button id="btn-reset" title="Choose another land and start again">🌍 New world…</button>
         <button id="btn-map" title="Show or hide the small map (M)">🗺️</button>
+        <button id="btn-save" title="Save this world (Ctrl+S saves at once)">💾</button>
         <span id="world-info" class="hint"></span>
       </div>
 
-      <div class="hint">Modes at the top of the world: 👁 Watch · ⚡ God (smite, heal, speak) · 🎮 Play (become someone). Press H for all the controls.</div>
+      <form id="save-form" class="controls" hidden><input id="save-name" maxlength="40" autocomplete="off" placeholder="Name this save"><button>💾 Save</button><button id="save-cancel" type="button">✕</button></form>
+      <div class="hint">Modes at the top of the world: 👁 Watch · ⚡ God (shape the land, the sky and the people) · 🎮 Play (become someone). Press H for all the controls.</div>
       <div class="hint">🏠 hut (home) · 🌾 farm · 🔥 campfire · 🪦 grave · ring colour under feet = temperament</div>
 
       <h2 class="row">Conversations
@@ -166,6 +187,7 @@
             <button id="btn-possess" title="Take over this villager: you decide what they do and say (Esc leaves)">🎮 Become them</button>
             <button id="btn-heal" title="Heal them (health and energy)">❤️</button>
             <button id="btn-feed" title="Feed them (full, and 3 food in hand)">🍖</button>
+            <button id="btn-bless" title="Bless them (everything full, a little wiser)">✨</button>
             <button id="btn-smite" title="Strike them down with lightning">⚡</button>
           </div>
           <form id="say-form"><input id="say-text" maxlength="240" autocomplete="off"><button>Say</button></form>

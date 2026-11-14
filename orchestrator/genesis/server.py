@@ -11,7 +11,9 @@ Client -> server messages (JSON): {"cmd": "pause" | "resume" | "step"},
 {"cmd": "models", "think": name, "talk": name, "best_of": n} (change the LLMs; any may be left
 out, and with none it just re-reads what Ollama has installed),
 {"cmd": "preview", ...same options...} (what that world would look like, answered with
-{"type": "preview", ...} to the asker only), {"cmd": "world", "op": {...}} (see World.apply).
+{"type": "preview", ...} to the asker only), {"cmd": "world", "op": {...}} (see World.apply),
+{"cmd": "power", "power": key, "x": .., "y": .., "npc": ..} (a god power: see powers.py),
+{"cmd": "save" | "load" | "delete_save", "name": ...} and {"cmd": "saves"} (saved games: see saves.py).
 Server -> client: {"type": "defs", ...} once on connect (the content registry and the maps),
 {"type": "frame", ...} every tick (see sim.Simulation._frame), plus
 {"type": "control", "paused": bool, "menu": bool, "tick_ms": int, ...} on changes.
@@ -33,10 +35,12 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from . import saves
 from .brain import installed_models
 from .config import add_sim_args, build_sim, model_of, switch_models
 from .engine import MAPS, World
 from .engine.defs import client_defs
+from .powers import MODES, client_powers
 
 log = logging.getLogger("genesis.server")
 # Browsers refuse ES modules served as text/plain, which is what Windows' registry can say .js is.
@@ -46,6 +50,7 @@ WEB_DIR = Path(os.environ.get("GENESIS_WEB_DIR", Path(__file__).resolve().parent
 
 # The sizes a world may be (tiles) and how many founders it may start with.
 LIMITS = {"width": (24, 200), "height": (18, 150), "population": (1, 24)}
+AUTOSAVE_TICKS = 1200   # ticks between autosaves (~4-5 minutes at the default speed)
 
 
 class Hub:
@@ -62,12 +67,15 @@ class Hub:
         self._step_once = asyncio.Event()
         self._lock = asyncio.Lock()
         self._sent = None  # (world, rev, trev) of the last frame broadcast
+        self.save_dir = Path(getattr(args, "save_dir", None) or saves.DEFAULT_DIR)
+        self.autosave_every = getattr(args, "autosave", AUTOSAVE_TICKS) if args is not None else 0
+        self._saved_at = 0  # tick of the last autosave
 
     def control(self) -> dict:
         cfg = self.sim.cfg
         return {"type": "control", "paused": self.paused, "menu": self.menu, "tick_ms": self.tick_ms,
                 "seed": cfg.seed, "map": cfg.map_name, "width": cfg.width, "height": cfg.height,
-                "population": cfg.population,
+                "population": cfg.population, "god_mode": cfg.god_mode,
                 "models": {"installed": self.installed, "think": model_of(self.sim.brain),
                            "talk": model_of(self.sim.talker), "best_of": getattr(self.sim.talker, "best_of", 1),
                            "switching": self.switching}}
@@ -107,6 +115,9 @@ class Hub:
                         await self.broadcast(self.control())
                         continue
                 await self.broadcast(self._slim(frame))
+                if self.autosave_every and frame["tick"] - self._saved_at >= self.autosave_every                         and frame["stats"]["population"] > 0:
+                    self._saved_at = frame["tick"]
+                    await self._save(saves.AUTOSAVE)
                 if frame["stats"]["population"] == 0 and not self.paused:
                     self.paused = True
                     await self.broadcast(self.control())
@@ -150,6 +161,9 @@ class Hub:
         want = self._world_options(msg)
         cfg.map_name, cfg.width, cfg.height, cfg.population = (want[k] for k in ("map", "width", "height",
                                                                                  "population"))
+        if msg.get("mode") in MODES:
+            cfg.god_mode = msg["mode"]
+        self._saved_at = 0
         async with self._lock:
             self.sim.reset(want["seed"])
         self.paused = self.menu = False
@@ -222,6 +236,69 @@ class Hub:
         self.sim.god(str(msg.get("power", "")), int(msg.get("npc", -1)))
         return False
 
+    async def _cmd_power(self, msg, ws):
+        """{"cmd": "power", "power": key, "x": .., "y": .. | "npc": id}: a god power (see powers.py).
+        The asker is told how it went if it failed or there is something to say."""
+        async with self._lock:
+            ok, text = self.sim.power(str(msg.get("power", "")), int(msg.get("x", -1)), int(msg.get("y", -1)),
+                                      int(msg.get("npc", -1)))
+        if ws is not None and (text or not ok):
+            await ws.send_json({"type": "toast", "ok": ok, "text": text, "power": msg.get("power")})
+        return False
+
+    # --- saved games -------------------------------------------------------------
+    async def _save(self, name: str) -> str | None:
+        """Save the game; returns the error, if it failed."""
+        async with self._lock:  # (between ticks: the world holds still while it is packed)
+            info, blob = saves.pack(self.sim)
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, saves.write, self.save_dir, name, info, blob)
+        except OSError as e:
+            log.warning("saving %r failed: %s", name, e)
+            return str(e)
+        log.info("saved %r (%d KB)", name, len(blob) // 1024)
+        return None
+
+    async def _cmd_save(self, msg, ws):
+        name = saves.clean_name(msg.get("name") or "save")
+        err = await self._save(name)
+        if ws is not None:
+            await ws.send_json({"type": "toast", "ok": err is None,
+                                "text": f"Couldn't save: {err}" if err else f"Saved as \"{name}\""})
+            await self._cmd_saves(msg, ws)
+        return False
+
+    async def _cmd_saves(self, msg, ws):
+        """{"cmd": "saves"}: the list of saved games, to the asker only."""
+        if ws is not None:
+            listed = await asyncio.get_running_loop().run_in_executor(None, saves.listing, self.save_dir)
+            await ws.send_json({"type": "saves", "saves": listed})
+        return False
+
+    async def _cmd_delete_save(self, msg, ws):
+        saves.delete(self.save_dir, msg.get("name", ""))
+        await self._cmd_saves(msg, ws)
+        return False
+
+    async def _cmd_load(self, msg, ws):
+        """{"cmd": "load", "name": ...}: carry on a saved game (it starts paused)."""
+        name = msg.get("name", "")
+        try:
+            snap = await asyncio.get_running_loop().run_in_executor(None, saves.read, self.save_dir, name)
+        except (OSError, ValueError, EOFError) as e:
+            if ws is not None:
+                await ws.send_json({"type": "toast", "ok": False, "text": f"Couldn't load that save: {e}"})
+            return False
+        async with self._lock:
+            self.sim.restore(snap)
+        self.paused, self.menu = True, False
+        self._sent = None
+        self._saved_at = self.sim.state["tick"]
+        await self.broadcast(self.sim.last_frame)
+        if ws is not None:
+            await ws.send_json({"type": "toast", "ok": True,
+                                "text": f"Loaded \"{saves.clean_name(name)}\". Press play (or Space) to carry on."})
+
     async def _cmd_world(self, msg, ws):
         """Change the world directly (see ``World.apply``); applied at the start of the next tick."""
         op = msg.get("op")
@@ -257,7 +334,7 @@ def create_app(args) -> FastAPI:
         hub: Hub = app.state.hub
         await ws.accept()
         hub.clients.add(ws)
-        await ws.send_json({"type": "defs", **client_defs(), "limits_world": LIMITS,
+        await ws.send_json({"type": "defs", **client_defs(), "limits_world": LIMITS, "powers": client_powers(),
                             "maps": [{"key": m.key, "label": m.label, "blurb": m.blurb} for m in MAPS.values()]})
         await ws.send_json(hub.control())
         await ws.send_json(hub.sim.last_frame)
@@ -319,6 +396,8 @@ def main():
     p.add_argument("--autostart", action="store_true",
                    help="skip the start screen: begin at once on the world the options describe")
     p.add_argument("--parent-pid", type=int, default=None, help="exit when this process exits (sidecar mode)")
+    p.add_argument("--save-dir", default=None, help=f"where saved games go (default: {saves.DEFAULT_DIR})")
+    p.add_argument("--autosave", type=int, default=AUTOSAVE_TICKS, help="ticks between autosaves (0: never)")
     args = p.parse_args()
     if args.parent_pid:
         watch_parent(args.parent_pid)

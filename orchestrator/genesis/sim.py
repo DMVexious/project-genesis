@@ -25,6 +25,7 @@ from .engine.defs import (ACTIONS, ANIMALS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_E
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
 from .events import Director
+from . import powers
 from .memory import Memory
 from .traits import (Genome, belief_text, make_name, make_village_name, random_genome, random_look, random_persona, splice,
                      splice_look, splice_persona, voice_text)
@@ -68,7 +69,7 @@ CHAT_IDLE = 110           # ticks (~25 s) of silence from the player before the 
 CHAT_REACH = 2            # how far apart the two may get before the conversation is over
 CHAT_KEEP = 12            # lines of the conversation the other one keeps in mind (and the player sees)
 WALK_LIMIT = 400          # how far (in steps) the player's "walk there" looks for a way
-GOD_POWERS = ("heal", "feed", "smite")
+GOD_POWERS = ("heal", "feed", "smite", "bless")
 
 
 @dataclass
@@ -91,6 +92,7 @@ class SimConfig:
     convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
     llm_choices: int = 10     # the LLM is shown at most this many actions (the most appealing ones)
     map_name: str = GAME_MAP  # world preset (engine.MAPS)
+    god_mode: str = "sandbox" # "sandbox" (powers are free) or "deity" (they cost faith): see powers.py
 
 
 class Simulation:
@@ -117,6 +119,8 @@ class Simulation:
         self.news: deque[str] = deque(maxlen=6)  # recent village events NPCs gossip about
         self.director = Director(self.cfg.seed)   # wildfires, migrants, festivals... (see events.py)
         self.mauled: dict[int, int] = {}          # NPC -> tick a wolf last bit them
+        self.faith = powers.FAITH_START            # the god's faith (spent on powers in deity mode)
+        self.believers: set[int] = set()           # villagers who have heard the voice or seen a miracle
         self.memory.reset()
         for task in getattr(self, "pending", {}).values():
             task.cancel()
@@ -132,6 +136,61 @@ class Simulation:
                 genome = dataclasses.replace(genome, aggression="Hostile")
             self._register(n["id"], genome, look=random_look(self.rng),
                            persona=random_persona(self.persona_rng))
+        self._runtime()
+        self.last_frame = self._frame({}, [])
+
+    # What a saved game keeps of the simulation (beyond the world itself and the
+    # memories): everything that lasts from one tick to the next. Brain calls in
+    # flight, conversations and the player's body are not kept: whoever was in the
+    # middle of one simply decides afresh.
+    SAVED = ("rng", "persona_rng", "village_rng", "news", "director", "mauled", "faith", "believers", "meta",
+             "totals", "homes", "vacant", "plans", "decision_stats", "last_llm", "last_talk", "busy_until",
+             "busy_from", "working", "talk_wait", "roles", "village_names", "relations", "quiet",
+             "last_any_talk", "_last_seen", "llm_neighbours", "activity", "intent", "source")
+
+    def snapshot(self) -> dict:
+        """Everything needed to carry this world on later (see ``restore``). The
+        world object itself is included as is: the caller pickles the lot."""
+        return {"cfg": dataclasses.asdict(self.cfg), "world": self.engine.world,
+                "sim": {k: getattr(self, k) for k in self.SAVED},
+                # (the rule-based brains roll their own dice: without these a loaded world would drift)
+                "dice": {role: b.rng.getstate() for role, b in self._brains().items()},
+                "memory": [dataclasses.asdict(m) for m in self.memory.dump()]}
+
+    def restore(self, snap: dict):
+        """Carry on a world from a ``snapshot``."""
+        for k, v in snap["cfg"].items():
+            if hasattr(self.cfg, k):
+                setattr(self.cfg, k, v)
+        for task in getattr(self, "pending", {}).values():
+            task.cancel()
+        self.epoch = getattr(self, "epoch", 0) + 1
+        self.memory.reset()
+        self.memory.load([Memory(**m) for m in snap["memory"]])
+        world = snap["world"]
+        world.controlled.clear()  # (nobody's body is the player's any more)
+        self.engine.world = world
+        self.state = self.engine.state()
+        self.commands = []
+        self._runtime()
+        for k, v in snap["sim"].items():
+            setattr(self, k, v)
+        brains = self._brains()
+        for role, dice in snap.get("dice", {}).items():
+            if role in brains:
+                brains[role].rng.setstate(dice)
+        self.last_frame = self._frame({}, [])
+
+    def _brains(self) -> dict:
+        """The brains that roll dice of their own, by role."""
+        out = {}
+        for role, b in (("brain", self.brain), ("reflex", self.reflex), ("talker", self.talker)):
+            if isinstance(getattr(b, "rng", None), random.Random) and all(b is not o for o in out.values()):
+                out[role] = b
+        return out
+
+    def _runtime(self):
+        """The bookkeeping of a running world, from scratch."""
         self.totals = {"births": 0, "deaths": 0, **{b.stat: 0 for b in BUILDINGS if b.stat},
                        "fights": 0, "trades": 0}
         self.homes: dict[int, tuple[int, int]] = {}  # NPC -> its home hut (built, inherited or claimed)
@@ -184,7 +243,6 @@ class Simulation:
         self.intent: dict[int, str] = {}
         self.source: dict[int, str] = {}
         self.started: dict[int, int] = {}              # NPCs that began an action this tick -> duration
-        self.last_frame = self._frame({}, [])
 
     def _register(self, nid: int, genome: Genome, **kw) -> NpcMeta:
         name = make_name(self.rng, {m.name for m in self.meta.values()})
@@ -428,6 +486,7 @@ class Simulation:
         # 6. Memory logging + births.
         log_lines = self.god_log + self._process_events(self.state["events"], lines, now)
         log_lines += self.director.tick(self, now)
+        powers.earn(self, self.state["events"], now)
         self.god_log = []
         self._collect_voices(now)
         self._run_chat(now, living)
@@ -771,6 +830,7 @@ class Simulation:
         if n is None or not text or self.possessed is not None:  # (in a body, a god's voice is gone)
             return False
         self.voice_asks.append((nid, text))  # (answered from the tick loop: see _collect_voices)
+        self.believers.add(nid)
         return True
 
     async def _answer_voice(self, n: dict, text: str) -> dict:
@@ -798,22 +858,12 @@ class Simulation:
             self.voice_lines.append(r)
 
     def god(self, power: str, nid: int) -> bool:
-        """Heal, feed or strike down a villager."""
-        n = next((n for n in self.state["npcs"] if n["id"] == nid and n["alive"]), None)
-        if n is None or power not in GOD_POWERS or self.possessed is not None:  # (no god powers while in a body)
-            return False
-        name = self.meta[nid].name
-        if power == "heal":
-            for stat in ("health", "energy"):
-                self.enqueue({"op": "stat", "npc": nid, "stat": stat, "value": 100})
-            self.god_log.append(f"❤️ The gods heal {name}")
-        elif power == "feed":
-            self.enqueue({"op": "stat", "npc": nid, "stat": "hunger", "value": 100})
-            self.enqueue({"op": "give", "npc": nid, "item": "food", "n": 3})
-            self.god_log.append(f"🍖 The gods feed {name}")
-        else:
-            self.enqueue({"op": "kill", "npc": nid, "cause": "lightning"})
-        return True
+        """Heal, feed, bless or strike down a villager."""
+        return power in GOD_POWERS and self.power(power, npc=nid)[0]
+
+    def power(self, key: str, x: int = -1, y: int = -1, npc: int = -1) -> tuple[bool, str]:
+        """Use one of the god's powers (see powers.py): (done, what to tell the player)."""
+        return powers.use(self, key, x, y, npc)
 
     def _player_frame(self) -> dict | None:
         """What the player's body can do right now, for the controls."""
@@ -1477,6 +1527,7 @@ class Simulation:
             "clock": self.state.get("clock", {}),
             "animals": self.state.get("animals", []),
             "happenings": self.director.happened,  # this tick's big events (wildfire, festival...)
+            "god": {"mode": self.cfg.god_mode, "faith": self.faith, "believers": len(self.believers)},
         }
         self.last_frame = frame
         return frame

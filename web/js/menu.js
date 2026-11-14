@@ -3,6 +3,7 @@
  * when the server is waiting for a world to be chosen, and from the "New
  * world" button at any time. */
 import { $ } from "./config.js";
+import { toast } from "./god.js";
 import { paintMap } from "./minimap.js";
 import { send } from "./net.js";
 import { state } from "./state.js";
@@ -13,8 +14,9 @@ const m = { open: false, first: false, built: false, map: "valley", size: 1, ask
 export const menuOpen = () => m.open;
 const options = () => {
   const [, width, height] = SIZES[m.size];
+  const mode = (document.querySelector('input[name="menu-mode"]:checked') || {}).value || "sandbox";
   return { map: m.map, seed: Math.max(0, Math.floor(Number($("menu-seed").value) || 0)), width, height,
-           population: Math.max(1, Math.min(24, Math.floor(Number($("menu-pop").value) || 3))) };
+           population: Math.max(1, Math.min(24, Math.floor(Number($("menu-pop").value) || 3))), mode };
 };
 
 function build() {
@@ -74,7 +76,10 @@ export function openMenu(first = false) {
     $("menu-size").value = m.size;
     $("menu-pop").value = c.population || 3;
     $("menu-seed").value = first ? c.seed ?? 7 : Math.floor(Math.random() * 1e6);
+    const mode = document.querySelector(`input[name="menu-mode"][value="${c.god_mode || "sandbox"}"]`);
+    if (mode) mode.checked = true;
   }
+  send({ cmd: "saves" });
   m.open = true;
   m.first = first;
   send({ cmd: "models" });  // (re-read what Ollama has: a model may have been pulled since)
@@ -83,6 +88,27 @@ export function openMenu(first = false) {
   $("menu").hidden = false;
   mark();
   preview();
+}
+
+// --- saved games ----------------------------------------------------------------------------
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function ago(t) {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago`
+    : new Date(t * 1000).toLocaleDateString();
+}
+
+export function onSaves(list) {
+  $("menu-saves").hidden = !list.length;
+  const maps = (state.defs && state.defs.maps) || [];
+  $("menu-saves-list").innerHTML = list.map((s) => {
+    const land = (maps.find((d) => d.key === s.map) || {}).label || s.map;
+    const where = (s.villages || []).slice(0, 2).join(", ");
+    return `<li><b>${esc(s.name)}</b><span class="hint">${esc(land)}${where ? ` · ${esc(where)}` : ""} · day ${s.day ?? "?"}, ${esc(s.season || "")}
+      · ${s.people} people${s.mode === "deity" ? " · 🙏" : ""} · ${ago(s.saved)}</span>
+      <button data-load="${esc(s.name)}" class="primary">Load</button>
+      <button data-del="${esc(s.name)}" title="Delete this save">🗑</button></li>`;
+  }).join("");
 }
 
 // --- which LLMs villagers think and talk with -------------------------------------------
@@ -131,6 +157,13 @@ export function initMenu() {
   $("menu-talk").onchange = (e) => changeModels("talk", e.target.value);
   $("menu-bestof").onchange = (e) => changeModels("best_of", e.target.value);
   $("menu-start").onclick = () => { send({ cmd: "reset", ...options() }); closeMenu(); };
+  let armed = "";  // (a delete asks twice: the first click arms it)
+  $("menu-saves-list").addEventListener("click", (e) => {
+    const load = e.target.closest("button[data-load]"), del = e.target.closest("button[data-del]");
+    if (load) { send({ cmd: "load", name: load.dataset.load }); closeMenu(); }
+    else if (del && armed === del.dataset.del) { send({ cmd: "delete_save", name: del.dataset.del }); armed = ""; }
+    else if (del) { armed = del.dataset.del; del.textContent = "Delete?"; toast(`Click again to delete "${armed}"`, false); }
+  });
   document.addEventListener("keydown", (e) => {
     if (!m.open) return;
     if (e.key === "Escape" && !m.first) closeMenu();

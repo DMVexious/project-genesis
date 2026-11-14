@@ -31,6 +31,7 @@ class Director:
         self.rng = random.Random(seed * 31_337 + 5)
         self.last = -10**9
         self.happened: list[dict] = []  # this tick's events, for the front end: {kind, text, x, y}
+        self.forced: list[dict] = []    # events the god called up since the last tick (see powers.py)
 
     # --- helpers ---------------------------------------------------------------------
     def _villages(self, sim, least: int = 1) -> list[dict]:
@@ -171,7 +172,7 @@ class Director:
     # --- the director ------------------------------------------------------------------
     def tick(self, sim, now: int) -> list[str]:
         """Maybe make something happen. Returns chronicle lines."""
-        self.happened = []
+        self.happened, self.forced = self.forced, []
         if now < FIRST_EVENT or now % CHECK_EVERY or now - self.last < MIN_GAP:
             return []
         villages = self._villages(sim)

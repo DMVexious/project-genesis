@@ -551,6 +551,18 @@ def apply(w, cmd: dict) -> bool:
         if old != w.weather:
             w.events.append({"type": "weather", "weather": w.weather, "was": old, "npc": -1})
         return True
+    if op == "strike" and w.inb(x, y):  # lightning wherever the gods point
+        for p in [p for p in w.npcs if p.alive and p.x == x and p.y == y]:
+            w.kill(p, "lightning")
+        if not ignite(w, x, y, "lightning"):
+            w.events.append({"type": "lightning", "npc": -1, "x": x, "y": y})
+        return True
+    if op == "cure" and n is not None and n.alive:  # a fever lifted
+        if n.sick:
+            n.sick = 0
+            n.immune = max(n.immune, IMMUNE_UNITS)
+            w.events.append({"type": "recover", "npc": n.id})
+        return True
     if op == "heal_all":  # (testing)
         for p in w.npcs:
             p.health = STAT_MAX

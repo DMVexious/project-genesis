@@ -4,6 +4,7 @@
  *   🎮 Play:  become them; from then on you steer that body (see play.js).
  * Plus the controls sheet (the ❓ button, or H), shown once on a first visit. */
 import { $ } from "./config.js";
+import { dropTool, powerDef } from "./god.js";
 import { send } from "./net.js";
 import { focus } from "./panel.js";
 import { state } from "./state.js";
@@ -11,7 +12,7 @@ import { state } from "./state.js";
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const HINT = {
   watch: "Watch: click a villager to follow them and see their stats.",
-  god: "God mode: click a villager to smite, heal, feed or speak to them.",
+  god: "God mode: pick a power from the bar below and click the land, or click a villager.",
   play: "Play: click a villager to become them.",
 };
 let mode = "watch";
@@ -22,6 +23,7 @@ export function setMode(m) {
   if (m === "play" && mode !== "play") before = mode;
   mode = m;
   closeGodMenu();
+  if (m !== "god") dropTool();
   for (const b of document.querySelectorAll("#modes button[data-mode]")) b.classList.toggle("on", b.dataset.mode === m);
   document.body.dataset.mode = m;
   showHint();
@@ -65,6 +67,12 @@ function openGodMenu(id, x, y) {
   focus(id);
   const box = $("godmenu"), stage = $("stage").getBoundingClientRect();
   $("gm-head").innerHTML = `⚡ <b>${esc(state.names.get(id) || "?")}</b>`;
+  const deity = state.frame && state.frame.god && state.frame.god.mode === "deity";
+  for (const b of $("gm-buttons").querySelectorAll("button[data-power]")) {  // (what each costs, in deity mode)
+    const p = powerDef(b.dataset.power);
+    if (!b.dataset.label) b.dataset.label = b.textContent;
+    b.textContent = deity && p ? `${b.dataset.label} (${p.cost})` : b.dataset.label;
+  }
   box.hidden = false;
   const w = box.offsetWidth, h = box.offsetHeight;
   box.style.left = `${Math.max(8, Math.min(stage.width - w - 8, x - w / 2))}px`;
@@ -120,6 +128,7 @@ export function initModes() {
     }
     if (e.key === "Escape" && godFor != null) { closeGodMenu(); return; }
     if (e.key === "Escape" && !$("help").hidden) { toggleHelp(false); return; }
+    if (e.key === "Escape" && dropTool()) return;
     if (state.possessed != null) return;  // (while playing, the keys walk: see play.js)
     const pick = { 1: "watch", 2: "god", 3: "play" }[e.key];
     if (pick) setMode(pick);

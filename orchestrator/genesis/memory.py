@@ -49,6 +49,13 @@ class SimpleMemory:
     def reset(self):
         self._items.clear()
 
+    def dump(self) -> list[Memory]:
+        """Every memory, oldest first (for a saved game)."""
+        return list(self._items)
+
+    def load(self, items: list[Memory]):
+        self._items.extend(items)
+
 
 class ChromaMemory:
     name = "chromadb"
@@ -120,6 +127,19 @@ class ChromaMemory:
 
     def count(self) -> int:
         return self._stored + len(self._pending)  # no DB round trip on every frame
+
+    def dump(self) -> list[Memory]:
+        """Every memory, oldest first (for a saved game): those stored, and those not embedded yet."""
+        with self._lock:
+            got = self._col.get(include=["documents", "metadatas"])
+            stored = [Memory(md["owner"], md["other"], md["tick"], md["kind"], d, md["valence"])
+                      for d, md in zip(got["documents"], got["metadatas"])]
+            return sorted(stored, key=lambda m: m.tick) + self._embedding + self._pending
+
+    def load(self, items: list[Memory]):
+        """Memories from a saved game: embedded with the next flush."""
+        for m in items:
+            self.log(m)
 
     def reset(self):
         with self._lock:

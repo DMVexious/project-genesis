@@ -306,7 +306,7 @@ export function initGod() {
     if (id == null) return;
     send(id === state.possessed ? { cmd: "release" } : { cmd: "possess", npc: id });
   };
-  for (const power of ["heal", "feed", "smite"])
+  for (const power of ["heal", "feed", "bless", "smite"])
     $(`btn-${power}`).onclick = () => { if (state.selected != null) send({ cmd: "god", power, npc: state.selected }); };
   $("say-form").addEventListener("submit", (e) => {
     e.preventDefault();

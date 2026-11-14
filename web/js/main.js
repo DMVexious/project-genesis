@@ -6,10 +6,11 @@
  * page's controls; the work is in the modules next to it.
  */
 import { $ } from "./config.js";
+import { initGodbar } from "./god.js";
 import { initMenu, menuOpen, openMenu } from "./menu.js";
 import { initMinimap, toggleMinimap } from "./minimap.js";
 import { connect, send } from "./net.js";
-import { initGod, renderTalks, select } from "./panel.js";
+import { focus, initGod, renderTalks, select } from "./panel.js";
 import { initModes } from "./modes.js";
 import { initPlay, playing } from "./play.js";
 import { goLive, rp, seek, setDir, step } from "./replay.js";
@@ -67,15 +68,47 @@ for (const box of [$("talks"), $("detail")]) box.addEventListener("click", (e) =
   if (a) select(Number(a.dataset.id));
 });
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && e.target.tagName !== "INPUT" && !menuOpen()) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {  // quick save
+    e.preventDefault();
+    send({ cmd: "save", name: "quicksave" });
+    return;
+  }
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || menuOpen()) return;
+  if (e.code === "Space") {
     e.preventDefault();
     send({ cmd: state.paused ? "resume" : "pause" });
+  } else if (playing()) {
+    return;  // (the keys below would also walk the body)
+  } else if (e.key === "+" || e.key === "=") {
+    send({ cmd: "speed", tick_ms: Math.max(50, state.tickMs - 50) });
+  } else if (e.key === "-" || e.key === "_") {
+    send({ cmd: "speed", tick_ms: Math.min(1000, state.tickMs + 50) });
+  } else if ((e.key === "f" || e.key === "F") && state.selected != null) {
+    focus(state.selected);
   }
+});
+
+// Saving: the 💾 button opens a box to name the save (a name already used is overwritten).
+const defaultName = () => {
+  const f = state.frame, v = f && f.villages && f.villages.find((x) => !x.abandoned);
+  return `${v ? v.name : "World"} day ${(f && f.clock && f.clock.day) || 1}`;
+};
+$("btn-save").onclick = () => {
+  $("save-form").hidden = !$("save-form").hidden;
+  if (!$("save-form").hidden) { $("save-name").value = defaultName(); $("save-name").select(); }
+};
+$("save-cancel").onclick = () => { $("save-form").hidden = true; };
+$("save-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("save-name").value.trim();
+  if (name) send({ cmd: "save", name });
+  $("save-form").hidden = true;
 });
 
 initMinimap();
 initMenu();
 initPlay();
 initGod();
+initGodbar();
 initModes();
 connect();

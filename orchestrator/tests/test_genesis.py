@@ -1608,3 +1608,129 @@ class ServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GodPowersTest(unittest.TestCase):
+    """M4: the god's powers over the land, faith, and saved games."""
+
+    def make(self, mode="sandbox", **kw):
+        return Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, god_mode=mode, **kw))
+
+    def open_tile(self, sim, near=None, far=3):
+        w = sim.engine.world
+        x0, y0 = near or w.start
+        for r in range(far, 30):
+            for y in range(y0 - r, y0 + r + 1):
+                for x in range(x0 - r, x0 + r + 1):
+                    if w.free(x, y) and w.terrain[w.idx(x, y)] == "grass":
+                        return x, y
+        self.fail("no open grass")
+
+    def test_land_powers(self):
+        from genesis.powers import POWERS
+        sim = self.make()
+        w = sim.engine.world
+        x, y = self.open_tile(sim)
+        self.assertEqual(sim.power("tree", x, y), (True, ""))
+        asyncio.run(sim.tick())
+        self.assertEqual(w.obj_at(x, y).kind, "tree")
+        ok, why = sim.power("tree", x, y)
+        self.assertFalse(ok)
+        self.assertIn("already", why)
+        # whoever saw it remembers, and believes
+        self.assertTrue(sim.believers)
+        self.assertTrue(any("tree sprang up" in m.text for m in sim.memory.dump()))
+        self.assertTrue(sim.power("clear", x, y)[0])
+        asyncio.run(sim.tick())
+        self.assertTrue(sim.power("dig", x, y)[0])
+        asyncio.run(sim.tick())
+        self.assertIsNone(w.obj_at(x, y))
+        self.assertEqual(w.terrain[w.idx(x, y)], "shallow")
+        self.assertTrue(sim.power("fill", x, y)[0])
+        asyncio.run(sim.tick())
+        self.assertEqual(w.terrain[w.idx(x, y)], "grass")
+        # buildings arrive finished, on the village's land
+        self.assertTrue(sim.power("b_hut", x, y)[0])
+        f = asyncio.run(sim.tick())
+        self.assertEqual((w.obj_at(x, y).kind, w.obj_at(x, y).progress), ("hut", 100))
+        self.assertTrue(any("raise a hut" in line for line in f["log"]))
+        # the sky, gifts, people and beasts
+        self.assertTrue(sim.power("rain")[0])
+        x2, y2 = self.open_tile(sim, far=4)
+        for key in ("food", "settler", "deer"):
+            self.assertTrue(sim.power(key, x2, y2)[0], key)
+        people = len(sim.alive())
+        f = asyncio.run(sim.tick())
+        self.assertEqual(f["clock"]["weather"], "rain")
+        self.assertEqual(len(sim.alive()), people + 1)
+        self.assertTrue(any(a[1] == "deer" for a in f["animals"]))
+        # lightning where you point: a tree goes up in flames
+        x3, y3 = self.open_tile(sim, far=6)
+        sim.power("tree", x3, y3)
+        asyncio.run(sim.tick())
+        self.assertTrue(sim.power("strike", x3, y3)[0])
+        f = asyncio.run(sim.tick())
+        self.assertEqual(w.obj_at(x3, y3).kind, "blaze")
+        # an event on demand, at the nearest village
+        self.assertTrue(sim.power("ev_trader", x, y)[0])
+        f = asyncio.run(sim.tick())
+        self.assertEqual([h["kind"] for h in f["happenings"]], ["trader"])
+        # every power on the toolbar has a way to be done
+        self.assertFalse(sim.power("nonsense", x, y)[0])
+        self.assertGreater(len(POWERS), 30)
+
+    def test_deity_mode_costs_faith(self):
+        from genesis.powers import FAITH_EVERY, FAITH_START, POWERS
+        sim = self.make("deity")
+        self.assertEqual(sim.faith, FAITH_START)
+        x, y = self.open_tile(sim)
+        self.assertTrue(sim.power("tree", x, y)[0])
+        self.assertEqual(sim.faith, FAITH_START - POWERS["tree"].cost)
+        sim.faith = 1
+        ok, why = sim.power("rain")
+        self.assertFalse(ok)
+        self.assertIn("faith", why)
+        # believers bring faith in, now and then
+        sim.believers = {n["id"] for n in sim.alive()}
+        for _ in range(FAITH_EVERY + 1):
+            f = asyncio.run(sim.tick())
+        self.assertGreater(sim.faith, 1)
+        self.assertEqual(f["god"]["mode"], "deity")
+        # sandbox: free
+        sand = self.make()
+        sand.faith = 0
+        self.assertTrue(sand.power("rain")[0])
+
+    def test_save_and_load(self):
+        import tempfile
+        from pathlib import Path
+        from genesis import saves
+        sim = self.make(population=4)
+        for _ in range(150):
+            asyncio.run(sim.tick())
+        x, y = self.open_tile(sim)
+        sim.power("b_shrine", x, y)
+        asyncio.run(sim.tick())
+        before = (sim.state["tick"], sorted((n["id"], n["x"], n["y"], n["health"]) for n in sim.alive()),
+                  sim.names(), sim.memory.count(), sim.engine.world.rows())
+        with tempfile.TemporaryDirectory() as d:
+            info, blob = saves.pack(sim)
+            saves.write(Path(d), "My World!", info, blob)
+            listed = saves.listing(Path(d))
+            self.assertEqual([s["name"] for s in listed], ["My World"])
+            self.assertEqual(listed[0]["people"], len(sim.alive()))
+            # carry on a while, then go back to the save
+            future = [asyncio.run(sim.tick()) for _ in range(40)][-1]
+            epoch = sim.epoch
+            sim.restore(saves.read(Path(d), "My World"))
+        after = (sim.state["tick"], sorted((n["id"], n["x"], n["y"], n["health"]) for n in sim.alive()),
+                 sim.names(), sim.memory.count(), sim.engine.world.rows())
+        self.assertEqual(before, after)
+        self.assertNotEqual(sim.last_frame["world"], future["world"])  # (the front end starts afresh)
+        self.assertGreater(sim.epoch, epoch)
+        self.assertTrue(any(o.kind == "shrine" for o in sim.engine.world.objs.values()))
+        # and life goes on from there (conversations in flight when it was saved are dropped)
+        again = [asyncio.run(sim.tick()) for _ in range(120)][-1]
+        self.assertEqual(again["tick"], before[0] + 120)
+        self.assertGreater(again["stats"]["population"], 0)
+        self.assertTrue(any(n["doing"] not in ("", "idle") for n in again["npcs"] if n["alive"]))
