@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from collections import Counter
 
-from . import mapgen
+from . import mapgen, nature
 from .defs import (ATTR_MAX, ATTR_MIN, ATTRS, BASE_ROOM, DROP_TTL, ELDER_AGE, FISH_REGROW, GOTO_BIT, ITEMS,
                    MIN_FERTILITY, OBJECTS, OLD_AGE_ODDS, PATH_WEAR, SITE, SKILL_MAX, SKILLS, START_AGE, STAT_MAX,
                    TERRAIN, VILLAGE_GAP, VILLAGE_MAX_RADIUS, VILLAGE_RADIUS, WALK_EXERCISE, WATER, WEARABLE,
-                   WET_BONUS, WET_REACH, attr_need, learn_rate, skill_need)
+                   WEATHER_UNITS, WET_BONUS, WET_REACH, attr_need, learn_rate, skill_need)
 from .npc import Npc
 
 MASK64 = (1 << 64) - 1
@@ -170,9 +170,20 @@ class World:
         self.actions: Actions = Actions(self)
         self.events: list[dict] = []
         self._carry = False                           # events/deaths from apply() await the next step
+        # the living world (see nature.py): weather, fire, wild animals, ground that grows back
+        self.season = "spring"
+        self.weather = "clear"
+        self.weather_left = WEATHER_UNITS
+        self.blazes: set[int] = set()                 # tiles on fire
+        self.revert: dict[int, list] = {}             # tile -> [the terrain it goes back to, units left]
+        self.animals: dict = {}                       # id -> nature.Animal
+        self.next_animal = 0
+        self.wild_cap: dict[str, int] = {}            # how many of each animal the land holds
+        self.omen: dict | None = None                 # {"kind": "comet" | "eclipse", "until": tick}
 
         mapgen.generate(self, map_name)
         mapgen.settle(self, npc_count)
+        nature.populate(self)
         self.generate_all_actions()
 
     # --- tiles ----------------------------------------------------------------
@@ -602,6 +613,7 @@ class World:
                 continue
             execute(self, n, acts[idx], opt)
 
+        nature.on_tick(self)
         if self.tick % self.decay_every == 0:
             self.world_time(self.tick // self.decay_every)
         self._bury()
@@ -642,7 +654,7 @@ class World:
 
         for i in sorted(self.timers):
             o = self.objs[i]
-            o.timer -= 1
+            o.timer -= nature.growth(self, o)  # (the season and the weather speed it up or hold it back)
             if o.timer <= 0:
                 if self.occ[i] > 0 or i in self.drops:
                     o.timer = 1  # someone is standing here (or something lies here); retry
@@ -673,6 +685,7 @@ class World:
             for i in range(len(self.wear)):  # unused paths slowly grow over (worn ground, not finished paths)
                 if self.wear[i] and self.terrain[i] != "path":
                     self.wear[i] -= 1
+        nature.on_world_time(self, phase)
 
     # --- outside intervention ---------------------------------------------------
     def apply(self, cmd: dict) -> bool:
@@ -717,7 +730,11 @@ class World:
         elif op == "spawn" and self.passable(x, y):
             born = self.spawn(x, y, 100, 80, 80, 20, int(cmd.get("age", START_AGE)))
             born.attrs = self.roll_attrs()
-            self.events.append({"type": "arrive", "npc": born.id, "x": x, "y": y})
+            if cmd.get("village", -1) in self.villages:
+                self.join(born, cmd["village"])
+            # (who they are may come with them: see sim._drain_commands)
+            self.events.append({"type": "arrive", "npc": born.id, "x": x, "y": y,
+                                **{k: cmd[k] for k in ("why", "persona") if k in cmd}})
             ok = True
         elif op == "kill" and n:
             self.kill(n, str(cmd.get("cause", "an act of god")))
@@ -734,6 +751,8 @@ class World:
         elif op == "move" and n and self.passable(x, y):
             self.teleport(n, x, y)
             ok = True
+        else:
+            ok = nature.apply(self, cmd)
         if ok:
             self._bury()
             self.generate_all_actions()
@@ -777,4 +796,6 @@ class World:
                           "buildings": self._buildings(v.id)} for v in self.villages.values()],
             "actions": self.actions,
             "events": self.events,
+            "clock": nature.clock(self),
+            "animals": [self.animals[k].to_json() for k in sorted(self.animals)],
         }

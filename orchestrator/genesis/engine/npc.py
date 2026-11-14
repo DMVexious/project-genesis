@@ -8,7 +8,7 @@ from .defs import ATTR_AVERAGE, ATTRS, ITEMS, SKILLS, carry_cap, role_of, skill_
 class Npc:
     __slots__ = ("id", "x", "y", "health", "hunger", "energy", "social", "inv",
                  "age", "alive", "asleep", "cause", "rest", "expecting", "partner",
-                 "attrs", "attr_xp", "skills", "skill_xp", "child_attrs", "steps", "village")
+                 "attrs", "attr_xp", "skills", "skill_xp", "child_attrs", "steps", "village", "sick", "cold", "immune")
 
     def __init__(self, id_, x, y, health, hunger, energy, social, age):
         self.id, self.x, self.y = id_, x, y
@@ -29,6 +29,9 @@ class Npc:
         self.skill_xp: dict[str, int] = {}   # skill -> practice toward the next level
         self.steps = 0                       # tiles walked (walking is exercise too)
         self.village = -1                    # the village they belong to (-1: none)
+        self.sick = 0                        # world-time units of illness left (0 = well)
+        self.cold = False                    # out in the cold with nothing to keep them warm
+        self.immune = 0                      # world-time units before they can fall ill again
 
     def have(self, item: str) -> int:
         return self.inv.get(item, 0)
@@ -74,7 +77,7 @@ class Npc:
             "health": self.health, "hunger": self.hunger, "energy": self.energy,
             "social": self.social, "inv": dict(self.inv), "age": self.age,
             "alive": self.alive, "asleep": self.asleep, "cause": self.cause,
-            "expecting": self.expecting, "village": self.village,
+            "expecting": self.expecting, "village": self.village, "sick": self.sick, "cold": self.cold,
             "attrs": dict(self.attrs), "skills": dict(self.skills), "role": role_of(self.skills),
             # practice toward the next level of each skill being learned: [have, needed]
             "xp": {k: [v, skill_need(self.skills.get(k, 0))] for k, v in self.skill_xp.items() if k in SKILLS},

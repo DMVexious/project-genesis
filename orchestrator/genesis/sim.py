@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 from .brain import Canned, Interaction, NpcView, base_option, clamp_words, describe_action
 from .engine import GAME_MAP
 from .engine.path import scan
-from .engine.defs import (ACTIONS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, GESTATION, INTERACTIONS,
+from .engine.defs import (ACTIONS, ANIMALS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, GESTATION, INTERACTIONS,
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
+from .events import Director
 from .memory import Memory
 from .traits import (Genome, belief_text, make_name, make_village_name, random_genome, random_look, random_persona, splice,
                      splice_look, splice_persona, voice_text)
@@ -32,7 +33,18 @@ log = logging.getLogger(__name__)
 
 BUILDING_GLYPHS = building_glyphs()
 GROUND = {t.glyph: t.label for t in TERRAIN.values()}  # terrain glyph -> "grass", "shallow water"...
-LOG_EMOJI = "💀🪦🏠🌀✨💞👶🎁🤝🫳⭐⚡❤🍖🎮🗣" + "".join(sorted({b.emoji for b in BUILDINGS}))  # stripped from news lines
+LOG_EMOJI = "💀🪦🏠🌀✨💞👶🎁🤝🫳⭐⚡❤🍖🎮🗣🏹🐺💦🔥🤒💪📖🌱☀🍂❄🌧⛈🌫🌨🥵🎉🧺🧳🧙☄🌑🌊🕯" + "".join(sorted({b.emoji for b in BUILDINGS}))  # stripped from news lines
+
+# (chronicle lines for the living world: see Simulation._nature_event)
+NATURE_EVENTS = frozenset({"season", "weather", "hunt", "mauled", "wolves", "ignite", "douse", "burn", "sick",
+                           "recover", "teach"})
+SEASON_LINES = {"spring": "🌱 Spring comes: the land wakes up", "summer": "☀️ Summer comes",
+                "autumn": "🍂 Autumn comes: the leaves turn", "winter": "❄️ Winter comes: nothing will grow until spring"}
+WEATHER_LINES = {"clear": "☀️ The skies clear", "rain": "🌧️ Rain sets in", "storm": "⛈️ A thunderstorm rolls in",
+                 "fog": "🌫️ Fog rolls in", "snow": "🌨️ Snow begins to fall",
+                 "drought": "🥵 A drought sets in: the land is parched"}
+DEATHS = {"wolves": "🐺 {} was killed by wolves", "illness": "🤒 {} died of a fever", "fire": "🔥 {} died in a fire",
+          "the cold": "❄️ {} froze to death"}
 
 
 @dataclass
@@ -103,6 +115,8 @@ class Simulation:
         # personas draw from their own stream so they don't shift the world's dice
         self.persona_rng = random.Random(self.cfg.seed * 1_000_003 + 17)
         self.news: deque[str] = deque(maxlen=6)  # recent village events NPCs gossip about
+        self.director = Director(self.cfg.seed)   # wildfires, migrants, festivals... (see events.py)
+        self.mauled: dict[int, int] = {}          # NPC -> tick a wolf last bit them
         self.memory.reset()
         for task in getattr(self, "pending", {}).values():
             task.cancel()
@@ -196,8 +210,11 @@ class Simulation:
         village = self._village_info(n.get("village", -1))
         if village:  # (how far from home they are: lighting a fire far away founds a new village)
             village["dist"] = max(abs(village["x"] - x0), abs(village["y"] - y0))
+        c = self.state.get("clock", {})
+        world = {k: c[k] for k in ("season", "time", "weather", "night") if k in c}
         return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(n["id"], []) if actions else [],
-                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona, ground, village)
+                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona, ground, village,
+                       world)
 
     # --- villages -------------------------------------------------------------------
     def village_name(self, vid: int) -> str:
@@ -241,7 +258,8 @@ class Simulation:
         for e in self.state["events"]:
             if e["type"] == "arrive" and e["npc"] not in self.meta:  # a newcomer needs a name and a nature
                 self._register(e["npc"], random_genome(self.rng), look=random_look(self.rng),
-                               persona=random_persona(self.persona_rng), born_tick=self.state["tick"])
+                               persona=dict(e.get("persona") or random_persona(self.persona_rng)),
+                               born_tick=self.state["tick"])
 
     def alive(self) -> list[dict]:
         return [n for n in self.state["npcs"] if n["alive"]]
@@ -409,6 +427,7 @@ class Simulation:
 
         # 6. Memory logging + births.
         log_lines = self.god_log + self._process_events(self.state["events"], lines, now)
+        log_lines += self.director.tick(self, now)
         self.god_log = []
         self._collect_voices(now)
         self._run_chat(now, living)
@@ -1077,7 +1096,13 @@ class Simulation:
         for e in events:
             t, a = e["type"], e.get("npc", -1)
             if t == "arrive":
-                out.append(f"✨ {nm(a)} appears out of nowhere")
+                if e.get("why") == "migrant":  # (the director tells the story of their coming)
+                    out.append(f"🧳 {nm(a)} arrives from far away")
+                    self.quiet.add(out[-1])
+                else:
+                    out.append(f"✨ {nm(a)} appears out of nowhere")
+            elif t in NATURE_EVENTS:
+                out.extend(self._nature_event(e, tick, nm))
             elif t == "levelup":
                 spec = SKILLS[e["skill"]]
                 role = next((n["role"] for n in self.state["npcs"] if n["id"] == a), "")
@@ -1169,8 +1194,11 @@ class Simulation:
                     out.append(f"🪦 {nm(a)} died peacefully of old age")
                 elif e["cause"] == "lightning":
                     out.append(f"⚡ {nm(a)} was struck down by lightning from a clear sky")
+                elif e["cause"] in DEATHS:
+                    out.append(DEATHS[e["cause"]].format(nm(a)))
                 else:
                     out.append(f"💀 {nm(a)} died of {e['cause']}")
+                out.extend(self._funeral(a, tick, nm))
                 out.extend(self._pass_on_home(a, nm))
             elif t == "build":
                 spec = OBJECTS[e["what"]]
@@ -1219,6 +1247,74 @@ class Simulation:
                     self.vacant.discard(hut)
                     self.homes[a] = hut
                     out.append(f"🏠 {nm(a)} moves into an empty hut")
+        return out
+
+    def _funeral(self, dead: int, tick: int, nm) -> list[str]:
+        """The village buries its dead: everyone there remembers it."""
+        body = next((n for n in self.state["npcs"] if n["id"] == dead), None)
+        vid = body.get("village", -1) if body else -1
+        mourners = [n["id"] for n in self.state["npcs"] if n["alive"] and n.get("village") == vid and vid != -1]
+        if not mourners:
+            return []
+        for m in mourners:
+            fond = self.memory.grudge(m, dead) >= 2
+            self._remember(m, dead, tick, "funeral", f"We buried {nm(dead)}." + (" I miss them." if fond else ""),
+                           -1 if fond else 0)
+        line = f"🕯️ {self.village_name(vid)} buries {nm(dead)}"
+        self.quiet.add(line)
+        return [line]
+
+    def _nature_event(self, e: dict, tick: int, nm) -> list[str]:
+        """The weather, the seasons, wild animals, fire and fever, as chronicle lines and memories."""
+        t, a = e["type"], e.get("npc", -1)
+        out, quiet = [], False
+        if t == "season":
+            out.append(SEASON_LINES[e["season"]])
+            for n in self.alive():
+                self._remember(n["id"], -1, tick, "season", f"{e['season'].capitalize()} came.", 0)
+        elif t == "weather":
+            out.append(WEATHER_LINES[e["weather"]])
+            quiet = e["weather"] in ("clear", "fog")
+        elif t == "hunt" and e["killed"]:
+            beast = ANIMALS[e["what"]]
+            out.append(f"🏹 {nm(a)} kills a wolf" if beast.hunter else f"🏹 {nm(a)} brings down {beast.label}")
+            self._remember(a, -1, tick, "hunt", f"I brought down {beast.label}.", 1)
+        elif t == "mauled" and e["hit"]:
+            if tick - self.mauled.get(a, -10**9) > 60:  # (one line per attack, not one per bite)
+                out.append(f"🐺 Wolves attack {nm(a)}")
+                self._remember(a, -1, tick, "wolf", "A wolf went for me and tore into me.", -3)
+            self.mauled[a] = tick
+        elif t == "wolves":
+            out.append("🐺 Wolves come out of the wild, hungry")
+        elif t == "ignite" and e.get("cause") == "lightning":
+            out.append("⚡ Lightning strikes a tree and sets it ablaze")
+        elif t == "douse":
+            out.append(f"💦 {nm(a)} beats out a fire")
+            self._remember(a, -1, tick, "fire", "I beat out a fire before it could spread.", 1)
+            quiet = True
+        elif t == "burn" and a >= 0:
+            self._remember(a, -1, tick, "fire", "I got burned by the fire.", -1)
+        elif t == "sick":
+            src = e.get("source", -1)
+            if e["how"] == "caught" and src in self.meta:
+                out.append(f"🤒 {nm(a)} catches a fever from {nm(src)}")
+                self._remember(a, src, tick, "sick", f"I caught a fever off {nm(src)}.", -1)
+            elif e["how"] == "cold":
+                out.append(f"🤒 {nm(a)} catches a chill that turns into a fever")
+                self._remember(a, -1, tick, "sick", "The cold got into my chest. I've got a fever.", -1)
+            else:
+                self._remember(a, -1, tick, "sick", "I've come down with a fever.", -1)
+            quiet = True
+        elif t == "recover":
+            out.append(f"💪 {nm(a)} gets over the fever")
+            self._remember(a, -1, tick, "sick", "My fever finally broke.", 1)
+            quiet = True
+        elif t == "teach":
+            b, skill = e["target"], SKILLS[e["skill"]].label.lower()
+            self._remember(b, a, tick, "teach", f"Old {nm(a)} showed me a thing or two about {skill}.", 1)
+            self._remember(a, b, tick, "teach", f"I taught {nm(b)} about {skill}.", 1)
+        if quiet:
+            self.quiet.update(out)
         return out
 
     def _maybe_convert(self, a: int, b: int, tick: int, nm) -> list[str]:
@@ -1378,6 +1474,9 @@ class Simulation:
                           "relations": {str(b): r for (a, b), r in self.relations.items() if a == v["id"]}}
                          for v in self.state.get("villages", [])],
             "memory": getattr(self.memory, "name", "?"),
+            "clock": self.state.get("clock", {}),
+            "animals": self.state.get("animals", []),
+            "happenings": self.director.happened,  # this tick's big events (wildfire, festival...)
         }
         self.last_frame = frame
         return frame

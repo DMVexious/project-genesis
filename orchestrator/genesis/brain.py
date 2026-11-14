@@ -19,8 +19,8 @@ import random
 import re
 from dataclasses import dataclass, field
 
-from .engine.defs import (ACTIONS, ATTR_AVERAGE, ATTRS, BUILDINGS, INTERACTIONS, ITEMS, MATURE_AGE, OBJECTS,
-                          SKILLS, attr_of, cost_text, describe_action, option_text, role_of, skill_of,
+from .engine.defs import (ACTIONS, ANIMALS, ATTR_AVERAGE, ATTRS, BUILDINGS, INTERACTIONS, ITEMS, MATURE_AGE,
+                          OBJECTS, SKILLS, WEATHERS, attr_of, cost_text, describe_action, option_text, role_of, skill_of,
                           years)  # noqa: F401  (describe_action is re-exported)
 from .traits import BELIEFS, TRAIT_HINTS, Genome, belief_text, voice_text
 
@@ -45,6 +45,23 @@ class NpcView:
     ground: str = ""  # what they are standing on: "grass", "shallow water"...
     # their village: {"name", "people", "room", "store": {item: n}, "has": {building: n}, "sites": n}
     village: dict = field(default_factory=dict)
+    # the time and weather: {"season", "time" ("morning", "night"...), "weather", "night"}; see nature.clock
+    world: dict = field(default_factory=dict)
+
+
+WEATHER_WORD = {"clear": "clear", "rain": "rainy", "storm": "stormy", "fog": "foggy", "snow": "snowy",
+                "drought": "scorching, bone-dry"}
+
+
+def scene_text(world: dict) -> str:
+    """"a snowy winter night", "a clear summer morning"."""
+    if not world:
+        return ""
+    return f"a {WEATHER_WORD.get(world.get('weather'), 'clear')} {world.get('season', '')} {world.get('time', '')}"
+
+
+def night(v) -> bool:
+    return bool(v.world.get("night"))
 
 
 @dataclass
@@ -117,10 +134,17 @@ def action_prompt(v: NpcView, names: dict[int, str]) -> list[dict]:
                 "life_stage": "elder (cannot have children)" if v.elder else
                               ("child" if s["age"] < MATURE_AGE else "adult"),
                 "inventory": dict(s.get("inv", {})),
+                **({"sick": "you have a fever"} if s.get("sick") else {}),
+                **({"cold": "you are freezing: get warm"} if s.get("cold") else {}),
                 "can_carry_at_most": s.get("caps") or {i.key: i.cap for i in ITEMS.values() if i.cap},
                 **({"standing_on": v.ground} if v.ground else {})},
         "home": "none - you have no hut of your own" if v.home is None else f"your hut is about {v.home} tiles away",
+        **({"now": f"it is {scene_text(v.world)}"} if v.world else {}),
         "rules": "Stats are 0-100. Fullness drops over time; at 0 you starve. Energy at 0 hurts you. "
+                 "Nights are dark and best slept through at home. In winter nothing edible grows and the cold "
+                 "wears you out unless you stay near a campfire or your home. Wolves hunt people at night and in "
+                 "winter. Deer and rabbits can be hunted for food. Fire spreads through trees in dry weather: "
+                 "beat it out. Sickness passes to whoever stands close. "
                  + building_rules() + " Big buildings start as a building site that takes work to finish; "
                  "anyone can help. A village can only have more children if it has homes for them. "
                  "A felled tree drops its wood on the ground: walk over it to pick "
@@ -170,6 +194,10 @@ def current_mood(stats: dict) -> str:
     """How an NPC feels right now, in a word or two (it colours what they say)."""
     if stats["health"] < 40:
         return "hurt and in pain"
+    if stats.get("sick"):
+        return "sick with a fever"
+    if stats.get("cold"):
+        return "freezing cold"
     if stats["hunger"] < 25:
         return "starving"
     if stats["energy"] < 20:
@@ -198,11 +226,13 @@ def dialogue_system_prompt(v: NpcView) -> str:
     trade = f" Around here you're known as a {role_name(v.stats)}." if role_name(v.stats) else ""
     quirk = (f" One odd thing about you: you {belief_text(v.persona)}. It slips out now and then, "
              "but mostly you talk about ordinary things.") if v.persona else ""
+    now = f" Right now it's {scene_text(v.world)}." if v.world else ""
     return (f"You are {v.name}, {stage} in a small stone-age village. Everybody here knows everybody. "
-            f"What you're like: {hints}.{trade}{voice}{quirk}\n"
+            f"What you're like: {hints}.{trade}{voice}{quirk}{now}\n"
             "Talk the way a real person talks to someone they see every day: casual, short, plain words, "
             "contractions (I'm, don't, gonna, can't). Say what's on your mind right now: how you feel, food, "
-            "wood, your hut, sleep, what they did, something you heard. React to them and to what just happened. "
+            "wood, your hut, sleep, the weather, what they did, something you heard. React to them and to what just "
+            "happened. "
             "No speeches, no poetry, no riddles, no fancy or old-fashioned words, no announcing who you are. "
             "Never describe what you are doing; just say the words you'd say out loud. "
             "This is how people here sound (don't copy these): "
@@ -549,7 +579,12 @@ def scorer(kind):
 @scorer("sleep")
 def _(v, a):
     e = v.stats["energy"]
-    return (100 if e == 0 else (85 if e < 25 else 4)) + (12 if v.genome.work == "Lazy" else 0)
+    score = (100 if e == 0 else (85 if e < 25 else 4)) + (12 if v.genome.work == "Lazy" else 0)
+    if night(v) and e < 75:  # night: bed (at home, if home is near enough to get to)
+        score = max(score, 62 if v.home is None or v.home <= 1 else 30)
+    if v.stats.get("sick") and e < 90:
+        score = max(score, 58)  # rest it off
+    return score
 
 
 @scorer("eat")
@@ -659,6 +694,8 @@ def _build_farm(v, near):
 
 
 def _build_fire(v, near):
+    if v.stats.get("cold") and not near.get("fire", 0) and have(v.stats, "wood") >= 3:
+        return 70  # freezing: light a fire
     if near.get("fire", 0) or (v.village and has(v, "fire") * 4 >= v.village.get("people", 0) + 4):
         return 2  # (one fire nearby, or enough for the village already)
     if v.village and v.village.get("dist", 0) > v.village.get("radius", 99):
@@ -740,12 +777,21 @@ def _goto_farm(v, a):
 
 
 def _goto_fire(v, a):
+    if v.stats.get("cold"):
+        return 66 - a["dist"] / 2  # somewhere warm
     score = (25 if have(v.stats, "food") > 0 and v.stats["hunger"] < 60 else 4) - a["dist"] / 2
     return score + (10 if v.genome.social == "Charismatic" else 0)
 
 
 def _goto_shelter(v, a):
+    if night(v) and v.stats["energy"] < 75 or v.stats.get("cold"):
+        return 64 - a["dist"]  # home for the night, or in out of the cold
     return (55 if v.stats["energy"] < 35 else 3) - a["dist"]
+
+
+def _goto_blaze(v, a):
+    near_home = bool(v.village) and v.village.get("dist", 99) <= v.village.get("radius", 7) + 4
+    return (46 if near_home else 6) - a["dist"] / 2 - (20 if v.genome.work == "Lazy" else 0)
 
 
 def _goto_rock(v, a):
@@ -778,7 +824,7 @@ def _goto_site(v, a):
 
 GOTO_SCORERS = {"tree": _goto_tree, "bush": _goto_bush, "farm": _goto_farm, "fire": _goto_fire,
                 "hut": _goto_shelter, "house": _goto_shelter, "rock": _goto_rock, "storehouse": _goto_store,
-                "workshop": _goto_workshop, "shrine": _goto_shrine, "site": _goto_site}
+                "workshop": _goto_workshop, "shrine": _goto_shrine, "site": _goto_site, "blaze": _goto_blaze}
 
 
 @scorer("collect")
@@ -831,6 +877,34 @@ def _(v, a):
     score += 15 if g.aggression == "Bloodthirsty" else 0
     score += knack(v.stats, "speech", "charisma") / 2
     return score + (25 if "mate" in a["options"] else 0)
+
+
+@scorer("hunt")
+def _(v, a):
+    s = v.stats
+    if ANIMALS[a["what"]].hunter:  # a wolf at your side: fight it off (or not, if you can barely stand)
+        return (78 if s["health"] > 45 else 25) + (10 if have(s, "spear") else 0)
+    hungry = s["hunger"] < 60 and have(s, "food") + have(s, "fish") < 2
+    return ((62 if hungry else 30) + knack(s, "combat", "agility") + (12 if have(s, "spear") else 0)
+            - (6 if a["what"] == "rabbit" else 0) - (40 if v.genome.aggression == "Pacifist" and not hungry else 0))
+
+
+@scorer("stalk")
+def _(v, a):
+    s = v.stats
+    if ANIMALS[a["what"]].hunter:
+        bold = v.genome.aggression == "Bloodthirsty" and have(s, "spear") and s["health"] > 70
+        return (24 if bold else -20) - a["dist"]
+    hungry = s["hunger"] < 60 and have(s, "food") + have(s, "fish") < 2
+    if have(s, "food") >= 4 and not hungry:
+        return 4
+    return ((52 if hungry else 22) + (10 if have(s, "spear") else 0)
+            + {"Hostile": 6, "Bloodthirsty": 10, "Pacifist": -12}.get(v.genome.aggression, 0)) - a["dist"] / 2
+
+
+@scorer("douse")
+def _(v, a):
+    return 88 - (15 if v.genome.work == "Lazy" else 0)
 
 
 @scorer("wander")

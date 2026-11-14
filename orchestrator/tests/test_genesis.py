@@ -1401,6 +1401,162 @@ class PlayerTests(unittest.TestCase):
         self.assertIsNone(f["player"])
 
 
+class NatureTests(unittest.TestCase):
+    """M3: the clock, seasons and weather, fire, illness, wild animals, the event director."""
+
+    def world(self, seed=4, pop=4):
+        e = Engine()
+        e.init(seed, 40, 30, pop)
+        return e, e.world
+
+    def test_clock_days_and_seasons(self):
+        from genesis.engine import nature
+        self.assertEqual(nature.season_of(0), "spring")
+        self.assertEqual(nature.time_words(0), "morning")
+        self.assertFalse(nature.is_night(0))
+        day = D.DAY_TICKS
+        self.assertEqual(nature.season_of(day * D.SEASON_DAYS), "summer")
+        self.assertEqual(nature.season_of(day * D.SEASON_DAYS * 3), "winter")
+        self.assertEqual(nature.season_of(day * D.SEASON_DAYS * 4), "spring")
+        midnight = round(day * (1 - D.START_HOUR))
+        self.assertTrue(nature.is_night(midnight))
+        self.assertEqual(nature.light(midnight), 0.0)
+        self.assertLess(nature.sight(type("W", (), {"weather": "fog", "tick": 0})()), D.SIGHT)
+
+    def test_nothing_edible_grows_in_winter(self):
+        from genesis.engine import nature
+        _, w = self.world()
+        bush = next(o for o in w.objs.values() if o.kind == "bush")
+        w.harvest(bush)
+        before = bush.timer
+        w.tick = D.DAY_TICKS * D.SEASON_DAYS * 3  # winter
+        w.world_time(1)
+        self.assertEqual(bush.timer, before)
+        w.tick = 0  # spring: it grows, faster than normal
+        w.world_time(2)
+        self.assertLess(bush.timer, before - 1)
+        self.assertEqual(nature.growth(w, bush), D.SEASON_GROWTH["spring"] * D.WEATHERS[w.weather].growth)
+
+    def test_fire_spreads_when_dry_dies_in_rain_and_leaves_ash_that_grows_back(self):
+        from genesis.engine import nature
+        _, w = self.world()
+        for n in list(w.npcs):
+            w.kill(n, "test")  # (nobody to get burned or put it out)
+        tree = next(o for o in w.objs.values() if o.kind == "tree" and sum(
+            1 for dx, dy in D.DIRS if (p := w.obj_at(o.x + dx, o.y + dy)) is not None and p.kind in D.FLAMMABLE) >= 2)
+        ground = w.terrain[w.idx(tree.x, tree.y)]
+        from unittest import mock
+        w.weather = "drought"
+        self.assertTrue(w.apply({"op": "ignite", "x": tree.x, "y": tree.y}))
+        self.assertEqual(w.obj_at(tree.x, tree.y).kind, "blaze")
+        burned = set()
+        tinder = dataclasses.replace(D.WEATHERS["drought"], spread=100)  # (sure to spread, for the test)
+        with mock.patch.dict(D.WEATHERS, {"drought": tinder}):
+            for _ in range(6):
+                nature.fires(w)
+                burned |= set(w.blazes)
+        self.assertGreater(len(burned), 1, "a drought fire should spread to what grows beside it")
+        self.assertEqual(w.terrain[w.idx(tree.x, tree.y)], "ash")
+        w.weather = "rain"
+        for _ in range(30):
+            nature.fires(w)
+        self.assertFalse(w.blazes, "rain puts fires out")
+        for _ in range(D.ASH_UNITS + 1):
+            nature.grow_back(w)
+        self.assertEqual(w.terrain[w.idx(tree.x, tree.y)], ground)
+
+    def test_hunting_a_deer_leaves_food_to_carry_home(self):
+        from genesis.engine import nature
+        from genesis.engine.actions import execute
+        _, w = self.world()
+        n = w.npcs[0]
+        n.inv["spear"] = 1
+        spot = next((n.x + dx, n.y + dy) for dx, dy in D.DIRS if nature._open(w, n.x + dx, n.y + dy))
+        deer = nature.add_animal(w, "deer", *spot)
+        w.generate_all_actions()
+        act = next(a for a in w.actions[n.id] if a["kind"] == "hunt")
+        self.assertEqual(act["what"], "deer")
+        for _ in range(20):
+            if deer.id not in w.animals:
+                break
+            deer.x, deer.y = spot  # (it would run off: hold it still)
+            execute(w, n, act, 0)
+        self.assertNotIn(deer.id, w.animals)
+        self.assertEqual(w.pile_at(*spot)["items"].get("food"), D.ANIMALS["deer"].food)
+
+    def test_wolves_go_for_people_at_night(self):
+        from genesis.engine import nature
+        _, w = self.world()
+        n = w.npcs[0]
+        n.health = 100
+        spot = next((n.x + dx, n.y + dy) for dx, dy in D.DIRS if nature._open(w, n.x + dx, n.y + dy))
+        wolf = nature.add_animal(w, "wolf", *spot)
+        w.tick = round(D.DAY_TICKS * (1 - D.START_HOUR))  # midnight
+        for _ in range(30):
+            w.tick += 1
+            nature.animals_tick(w)
+        self.assertTrue(any(e["type"] == "mauled" for e in w.events))
+        self.assertLess(n.health, 100)
+        self.assertTrue(wolf.id not in w.animals or wolf.hp < D.ANIMALS["wolf"].hp or n.asleep,
+                        "the bitten fight back")
+
+    def test_fever_spreads_to_neighbours_and_leaves_them_immune(self):
+        from genesis.engine import nature
+        _, w = self.world(pop=2)
+        a, b = w.npcs[:2]
+        b.x, b.y = a.x, a.y + 1 if w.passable(a.x, a.y + 1) else a.y
+        nature.fall_ill(w, a, "test", units=400)
+        for phase in range(1, 400):
+            nature.bodies(w, phase)
+            a.health = b.health = 100
+            if b.sick:
+                break
+        self.assertTrue(b.sick, "a fever passes to someone close by")
+        b.sick = 1
+        nature.bodies(w, 1)
+        self.assertEqual(b.sick, 0)
+        self.assertGreater(b.immune, 0)
+
+    def test_director_events_reach_the_chronicle_and_memories(self):
+        sim = Simulation(Engine(), HeuristicBrain(2), SimpleMemory(), SimConfig(seed=2, population=6))
+        asyncio.run(sim.tick())
+        v = sim.state["villages"][0]
+        before = sim.memory.count()
+        kind, line, _ = sim.director._trader(sim, v, sim.state["tick"])
+        self.assertEqual(kind, "trader")
+        self.assertIn(sim.village_name(v["id"]), line)
+        self.assertGreater(sim.memory.count(), before)
+        kind, line, spot = sim.director._stranger(sim, v, sim.state["tick"])
+        self.assertEqual(kind, "stranger")
+        for _ in range(2):
+            asyncio.run(sim.tick())
+        newcomer = max(sim.meta)
+        held = {m.persona["belief"] for i, m in sim.meta.items() if i != newcomer}
+        self.assertNotIn(sim.meta[newcomer].persona["belief"], held, "the stranger brings a belief nobody had")
+
+    def test_prompts_know_the_time_and_weather(self):
+        from genesis.brain import dialogue_system_prompt
+        sim = Simulation(Engine(), HeuristicBrain(2), SimpleMemory(), SimConfig(seed=2, population=3))
+        sim.engine.world.weather = "snow"
+        sim.state = sim.engine.state()
+        n = sim.alive()[0]
+        v = sim.view(n)
+        self.assertEqual(v.world["weather"], "snow")
+        self.assertIn("snowy spring morning", dialogue_system_prompt(v))
+        payload = json.loads(action_prompt(v, sim.names())[1]["content"].rsplit("\n", 1)[0])
+        self.assertIn("snowy", payload["now"])
+
+    def test_a_year_passes_and_the_village_lives(self):
+        sim = Simulation(Engine(), HeuristicBrain(5), SimpleMemory(), SimConfig(seed=5, population=8))
+        seen = Counter()
+        for _ in range(D.DAY_TICKS * D.SEASON_DAYS * 4 + 10):
+            asyncio.run(sim.tick())
+            seen.update(e["type"] for e in sim.state["events"])
+        self.assertEqual(seen["season"], 4)
+        self.assertGreater(seen["weather"], 3)
+        self.assertGreater(len(sim.alive()), 0)
+
+
 class ServerTests(unittest.TestCase):
     def test_start_screen_preview_and_new_world(self):
         import argparse

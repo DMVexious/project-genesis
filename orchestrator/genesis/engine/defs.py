@@ -57,6 +57,25 @@ KEEP_FOOD = 2            # food kept back when putting things in the village sto
 ELDER_AGE = 60 * YEAR    # from here on, each unit of world time may be the last
 OLD_AGE_ODDS = 65000     # death chance per unit = (age - ELDER_AGE) / OLD_AGE_ODDS (most die at 70-80)
 
+# the world's clock (its own calendar: a villager's year of life is much shorter, see YEAR)
+DAY_TICKS = 240          # ticks from one dawn to the next (~53 s at the default speed)
+SEASON_DAYS = 6          # days in each season
+SEASONS = ("spring", "summer", "autumn", "winter")
+DAWN, DUSK = 0.22, 0.78  # parts of the day: night is before dawn and after dusk
+START_HOUR = 0.3         # the world begins on a spring morning
+WEATHER_UNITS = 24       # world-time units between changes in the weather (about half a day)
+# the land and its dangers
+ASH_UNITS = 160          # world-time units before burnt ground grows over again
+BURN_UNITS = 4           # world-time units a fire burns on one tile
+MAX_BLAZES = 80
+FIRE_HURT = 4            # health lost per world-time unit standing next to a fire
+WARM_REACH = 2           # this close to a campfire (or beside a home) keeps the cold away
+SICK_UNITS = (30, 60)    # how long an illness lasts (world-time units, at random in this range)
+IMMUNE_UNITS = 400       # after a fever, world-time units before it can be caught again
+CATCH_ODDS = 1           # percent chance per unit of catching an illness from someone beside you
+TEACH_EVERY = 4          # world-time units between an elder's lessons
+TEACH_XP = 3
+
 DIRS = ((0, -1), (1, 0), (0, 1), (-1, 0))  # N, E, S, W
 STEP_NAMES = {(0, -1): "north", (1, 0): "east", (0, 1): "south", (-1, 0): "west"}
 
@@ -190,6 +209,8 @@ TERRAIN: dict[str, TerrainDef] = {t.key: t for t in (
     TerrainDef("stone", "_", "rocky ground", fertile=0.4, term=("∙", "37"), color="#8a8578"),
     TerrainDef("grass", ",", "grass", fertile=1.3, term=("„", "32"), color="#5f8f3c"),
     TerrainDef("forest", ";", "forest floor", fertile=1.15, term=("‥", "32;2"), color="#456a30"),
+    # (left by fire: ash is rich, and grows over again in time)
+    TerrainDef("ash", "'", "burnt ground", fertile=1.5, term=("░", "90"), color="#4a4440"),
     # (worn by feet: much-walked grass and earth turn into paths)
     TerrainDef("path", "=", "path", fertile=0.3, term=("░", "33"), color="#b0946a"),
     TerrainDef("snow", "*", "snow", fertile=0.25, move_cost=2, term=("*", "97"), color="#e8eef2"),
@@ -357,12 +378,15 @@ OBJECTS: dict[str, ObjectDef] = {o.key: o for o in (
               cost={"wood": 4, "stone": 8}, build_energy=12, build_ticks=14, work=110,
               why="a holy place: praying there brings peace, and beliefs spread around it", emoji="⛩️",
               stat="shrines", pray=True),
+    # (a fire spreading through the trees: it burns out to ash, and can be beaten out)
+    ObjectDef("blaze", "a fire", "fire burning", "!", term=("ж", "91")),
     # (not built as such: whatever is being built shows as a building site until it is finished)
     ObjectDef("site", "a building site", "building site", "%", term=("▒", "33")),
 )}
 SITE = OBJECTS["site"]
 
 BUILDINGS: tuple[ObjectDef, ...] = tuple(o for o in OBJECTS.values() if o.cost)
+FLAMMABLE = frozenset({"tree", "sapling", "bush", "fruit", "mushroom", "cactus"})  # catch fire (a farm's crop burns)
 HOMES: tuple[ObjectDef, ...] = tuple(o for o in BUILDINGS if o.home)
 
 # Path-finding looks for the nearest of each kind of place worth walking to (see
@@ -378,6 +402,66 @@ def cost_text(cost: dict) -> str:
 
 def can_afford(inv: dict, cost: dict) -> bool:
     return all(inv.get(k, 0) >= n for k, n in cost.items())
+
+
+# --- Weather and seasons --------------------------------------------------------
+@dataclass(frozen=True)
+class WeatherDef:
+    key: str
+    label: str                 # "rain" (prompts, chronicle)
+    emoji: str
+    growth: float = 1.0        # how fast plants grow back
+    wet: bool = False          # puts fires out and keeps them from spreading
+    spread: int = 6            # percent chance per unit a fire spreads to each thing beside it
+    sight: float = 1.0         # how far people can see
+    cold: int = 0              # extra cold (energy lost per unit by those without warmth)
+    lightning: int = 0         # percent chance per unit that lightning strikes a tree
+
+
+WEATHERS: dict[str, WeatherDef] = {w.key: w for w in (
+    WeatherDef("clear", "clear skies", "☀️"),
+    WeatherDef("rain", "rain", "🌧️", growth=1.5, wet=True, spread=0, sight=0.8),
+    WeatherDef("storm", "a thunderstorm", "⛈️", growth=1.5, wet=True, spread=0, sight=0.6, lightning=12),
+    WeatherDef("fog", "thick fog", "🌫️", spread=3, sight=0.4),
+    WeatherDef("snow", "snow", "🌨️", growth=0.5, wet=True, spread=0, sight=0.7, cold=1),
+    WeatherDef("drought", "a drought", "🥵", growth=0.5, spread=20),
+)}
+# weather each season can bring, and how likely each is
+SEASON_WEATHER = {
+    "spring": {"clear": 50, "rain": 30, "fog": 10, "storm": 10},
+    "summer": {"clear": 55, "rain": 10, "storm": 15, "drought": 20},
+    "autumn": {"clear": 40, "rain": 30, "fog": 20, "storm": 10},
+    "winter": {"clear": 35, "snow": 45, "fog": 20},
+}
+# how fast food plants grow back in each season (trees grow slowly but never stop)
+SEASON_GROWTH = {"spring": 1.4, "summer": 1.0, "autumn": 0.8, "winter": 0.0}
+TREE_WINTER_GROWTH = 0.4
+
+
+# --- Wild animals ---------------------------------------------------------------
+@dataclass(frozen=True)
+class AnimalDef:
+    key: str
+    label: str                 # "a deer"
+    emoji: str
+    hp: int
+    food: int = 0              # food it leaves when brought down
+    speed: int = 30            # percent chance per tick it moves when it means to
+    shy: int = 3               # flees from anyone this close (0 = never flees)
+    hunter: bool = False       # hunts people (at night, and in winter)
+    damage: tuple = (0, 0)
+    dodge: int = 0             # how much harder it is to hit than a person (percent)
+    per_tiles: int = 0         # one per this many tiles of land when the world begins (0 = none)
+
+
+ANIMALS: dict[str, AnimalDef] = {a.key: a for a in (
+    AnimalDef("deer", "a deer", "🦌", hp=22, food=6, speed=45, shy=4, dodge=10, per_tiles=550),
+    AnimalDef("rabbit", "a rabbit", "🐇", hp=6, food=2, speed=60, shy=3, dodge=30, per_tiles=380),
+    AnimalDef("wolf", "a wolf", "🐺", hp=34, food=4, speed=55, shy=0, hunter=True, damage=(5, 10), dodge=5),
+)}
+ANIMAL_ID_BASE = 1_000_000     # animal ids (kept apart from people's)
+MAX_WOLVES = 6
+WOLF_REST = 8                  # ticks between a wolf's bites
 
 
 # --- Actions -----------------------------------------------------------------
@@ -458,6 +542,13 @@ def _name(names, a):
     return names.get(a["target"], "?")
 
 
+def _d_hunt(a, names, me):
+    beast = ANIMALS[a["what"]]
+    if beast.hunter:
+        return f"Fight off the {beast.key} beside you (it attacks people)"
+    return f"Hunt the {beast.key} beside you (bring it down for {beast.food} food; it may run)"
+
+
 ACTIONS: dict[str, ActionDef] = {a.kind: a for a in (
     # (order here is the order actions are offered in; "sleep" must stay first)
     ActionDef("sleep", 10, lambda a, names, me: "Sleep (restore energy)"),
@@ -477,11 +568,15 @@ ACTIONS: dict[str, ActionDef] = {a.kind: a for a in (
     ActionDef("withdraw", 3, _d_store, ident=("what",)),
     ActionDef("pray", 8, lambda a, names, me: "Pray at the shrine (it brings peace of mind)", timed=True),
     ActionDef("interact", 7, lambda a, names, me: f"Interact with {_name(names, a)}", ident=("target",)),
+    ActionDef("hunt", 5, _d_hunt, ident=("target",), skill="combat", xp=6, attr="agility"),
+    ActionDef("douse", 5, lambda a, names, me: "Beat out the fire beside you before it spreads"),
     ActionDef("collect", 2, _d_collect, walk=True, attr="agility"),
     ActionDef("goto", 2, lambda a, names, me:
               f"Walk toward the nearest {OBJECTS[a['what']].place} ({a['dist']} steps)", ident=("what",), walk=True, attr="agility"),
     ActionDef("goto_npc", 2, lambda a, names, me:
               f"Walk toward {_name(names, a)} ({a['dist']} steps)", ident=("target",), walk=True, attr="agility"),
+    ActionDef("stalk", 2, lambda a, names, me:
+              f"Go after the {a['what']} ({a['dist']} steps away)", ident=("target",), walk=True, attr="agility"),
     ActionDef("wander", 3, lambda a, names, me: "Wander randomly", attr="agility"),
     # (only for someone the player controls: one step whichever way the player says)
     ActionDef("step", 2, lambda a, names, me: f"Step {STEP_NAMES[(a['dx'], a['dy'])]}", ident=("dx", "dy"),
@@ -576,7 +671,9 @@ EVENT_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "👶
                "eat": "🍖", "trade": "🤝", "gift": "🎁", "talk": "💬", "craft": "🗡️", "death": "💀",
                "sleep": "", "drop": "", "pickup": "", "levelup": "⭐", "attrup": "⭐",
                "mine": "⛏️", "fish": "🎣", "plant": "🌱", "construct": "🔨", "built": "🏗️", "deposit": "📦",
-               "withdraw": "📦", "pray": "🙏", "found": "🏘️", "path": ""}
+               "withdraw": "📦", "pray": "🙏", "found": "🏘️", "path": "",
+               "hunt": "🏹", "mauled": "🐺", "douse": "💦", "burn": "🔥",
+               "lightning": "⚡", "sick": "🤒", "recover": "💪"}
 FX_EVENTS = frozenset(EVENT_EMOJI)
 
 
@@ -624,4 +721,8 @@ def client_defs() -> dict:
         "skills": {s.key: {"label": s.label, "role": s.role, "emoji": s.emoji, "blurb": s.blurb}
                    for s in SKILLS.values()},
         "limits": {"attr": ATTR_MAX, "skill": SKILL_MAX},
+        "clock": {"day": DAY_TICKS, "season_days": SEASON_DAYS, "seasons": list(SEASONS), "dawn": DAWN,
+                  "dusk": DUSK, "start": START_HOUR},
+        "weather": {w.key: {"label": w.label, "emoji": w.emoji} for w in WEATHERS.values()},
+        "animals": {a.key: {"label": a.label, "emoji": a.emoji, "hp": a.hp} for a in ANIMALS.values()},
     }

@@ -16,6 +16,8 @@ from .defs import (ACTIONS, ATTR_AVERAGE, BUILDINGS, COST_ATTACK, COST_DEFEND, C
                    MATURE_AGE, MAX_TARGETS, OBJECTS, POP_LIMIT, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
                    TERRAIN, EDIBLE, FISH_REGROW, KEEP_FOOD, TOOL_FOR, WATER, WORK_BASE, WORK_PER_LEVEL, can_afford,
                    harvest_yield, tire_rate, trade_terms)
+from . import nature
+from .defs import ANIMALS
 from .path import build_site, scan
 from .world import cheb
 
@@ -59,17 +61,23 @@ class Context:
         self.world, self.n = world, n
         self._scan = None
         self.others = [o for o in world.npcs if o.id != n.id]
+        self.sight = nature.sight(world)  # (less at night and in fog)
         far = [o for o in self.others if cheb(o.x, o.y, n.x, n.y) > 1
-               and abs(o.x - n.x) + abs(o.y - n.y) <= SIGHT]
+               and abs(o.x - n.x) + abs(o.y - n.y) <= self.sight]
         far.sort(key=lambda o: (abs(o.x - n.x) + abs(o.y - n.y), o.id))
         self.far = far[:MAX_TARGETS]
+        beasts = [a for a in world.animals.values() if abs(a.x - n.x) + abs(a.y - n.y) <= self.sight]
+        beasts.sort(key=lambda a: (abs(a.x - n.x) + abs(a.y - n.y), a.id))
+        self.beside = [a for a in beasts if cheb(a.x, a.y, n.x, n.y) <= 1][:MAX_TARGETS]
+        self.prey = [a for a in beasts if cheb(a.x, a.y, n.x, n.y) > 1][:2]
 
     @property
     def scan(self) -> dict:
         if self._scan is None:
             n = self.n  # only things on the ground this NPC still has room for are worth a walk
             piles = [i for i, p in self.world.drops.items() if any(n.room(k) > 0 for k in p["items"])]
-            self._scan = scan(self.world, n.x, n.y, GOTO_BIT, self.far, GOTO_LIMIT, piles)
+            self._scan = scan(self.world, n.x, n.y, GOTO_BIT, self.far + self.prey, nature.walk_limit(self.world),
+                              piles)
         return self._scan
 
     def step(self, act: dict, dx: int, dy: int) -> dict:
@@ -127,7 +135,7 @@ def _(w, n, ctx):
 @runs("sleep")
 def _(w, n, act, opt):
     near = [o.spec for o in w.adjacent_objs(n) if o.progress >= 100]
-    gain = max([SLEEP_ENERGY] + [s.sleep_energy for s in near])
+    gain = max([SLEEP_ENERGY] + [s.sleep_energy for s in near]) + (6 if nature.is_night(w.tick) else 0)
     heal = max([0] + [s.sleep_heal for s in near])
     n.energy = min(STAT_MAX, n.energy + gain)
     n.health = min(STAT_MAX, n.health + heal)
@@ -460,6 +468,66 @@ def _(w, n, ctx):
     return out
 
 
+# --- the wild ---------------------------------------------------------------------------
+@offers("hunt")
+def _(w, n, ctx):
+    return [{"kind": "hunt", "target": a.id, "what": a.kind, "x": a.x, "y": a.y} for a in ctx.beside]
+
+
+@runs("hunt")
+def _(w, n, act, opt):
+    a = w.animals.get(act["target"])
+    if a is None or cheb(a.x, a.y, n.x, n.y) > 1:
+        return w.fail(n, "hunt")
+    spec = a.spec
+    _spend(n, 4)
+    chance = max(15, min(95, 60 + 3 * n.level("combat") + 3 * (n.attrs["agility"] - ATTR_AVERAGE)
+                         + (15 if n.have("spear") else 0) - spec.dodge))
+    hit = w.rng.below(100) < chance
+    dmg = max(1, 8 + w.rng.below(8) + _hit_bonus(n)) if hit else 0
+    a.hp -= dmg
+    killed = a.hp <= 0
+    w.events.append({"type": "hunt", "npc": n.id, "animal": a.id, "what": a.kind, "hit": hit, "damage": dmg,
+                     "killed": killed, "x": a.x, "y": a.y})
+    if killed:
+        del w.animals[a.id]
+        if spec.food:
+            w.drop(a.x, a.y, {"food": spec.food}, n.id)  # (walk over it to take it home)
+    elif spec.hunter:
+        if w.rng.below(100) < 50 and a.rest == 0:
+            nature.bite(w, a, n)  # a wolf bites back
+    else:
+        a.scared = 12  # off it runs
+
+
+@offers("stalk")
+def _(w, n, ctx):
+    out = []
+    for a in ctx.prey:
+        r = ctx.scan.get(a.id)
+        if r and r[0] > 0:
+            out.append(ctx.step({"kind": "stalk", "target": a.id, "what": a.kind, "dist": r[0], "dx": r[1],
+                                 "dy": r[2]}, r[1], r[2]))
+    return out
+
+
+@offers("douse")
+def _(w, n, ctx):
+    for o in w.adjacent_objs(n):
+        if o.kind == "blaze":
+            return [{"kind": "douse", "x": o.x, "y": o.y}]
+    return []
+
+
+@runs("douse")
+def _(w, n, act, opt):
+    i = w.idx(act["x"], act["y"]) if w.inb(act["x"], act["y"]) else -1
+    if i not in w.blazes or cheb(act["x"], act["y"], n.x, n.y) > 1:
+        return w.fail(n, "douse")
+    _spend(n, 5)
+    nature.burn_out(w, i, n.id)
+
+
 @offers("goto_npc")
 def _(w, n, ctx):
     out = []
@@ -478,6 +546,7 @@ def _run_step(w, n, act, opt):
 
 runs("goto")(_run_step)
 runs("goto_npc")(_run_step)
+runs("stalk")(_run_step)
 runs("step")(_run_step)
 
 
