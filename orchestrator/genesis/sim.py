@@ -584,7 +584,7 @@ class Simulation:
         """The player, as a voice from the sky, speaks to a villager, who answers."""
         text = clamp_words(str(text).strip(), PLAYER_WORDS)
         n = next((n for n in self.state["npcs"] if n["id"] == nid and n["alive"]), None)
-        if n is None or not text or nid == self.possessed:
+        if n is None or not text or self.possessed is not None:  # (in a body, a god's voice is gone)
             return False
         self.voice_asks.append((nid, text))  # (answered from the tick loop: see _collect_voices)
         return True
@@ -616,7 +616,7 @@ class Simulation:
     def god(self, power: str, nid: int) -> bool:
         """Heal, feed or strike down a villager."""
         n = next((n for n in self.state["npcs"] if n["id"] == nid and n["alive"]), None)
-        if n is None or power not in GOD_POWERS:
+        if n is None or power not in GOD_POWERS or self.possessed is not None:  # (no god powers while in a body)
             return False
         name = self.meta[nid].name
         if power == "heal":

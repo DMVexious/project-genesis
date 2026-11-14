@@ -1088,7 +1088,10 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(f["stats"]["population"], 2)
         # becoming someone who then dies hands control back
         sim.possess(a)
-        sim.god("smite", a)
+        # in someone's body, the god's powers and voice are gone
+        self.assertFalse(sim.god("heal", b))
+        self.assertFalse(sim.say(b, "Can you hear me?"))
+        sim.enqueue({"op": "kill", "npc": a, "cause": "a fall"})
         f = asyncio.run(sim.tick())
         f = asyncio.run(sim.tick())
         self.assertIsNone(f["possessed"])

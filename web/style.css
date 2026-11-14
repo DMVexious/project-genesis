@@ -298,3 +298,9 @@ body[data-mode="play"]:not(.playing) #game { cursor: pointer; }
 .help-cols ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
 kbd { display: inline-block; min-width: 16px; padding: 0 4px; border: 1px solid #6a5a48; border-bottom-width: 2px; border-radius: 3px;
   font: 600 11px/1.5 var(--mono); text-align: center; background: #15110d; }
+
+/* --- in someone's body: the god's tools are gone until you leave --------------- */
+body.playing #modes, body.playing #godmenu, body.playing #god, body.playing #btn-reset { display: none !important; }
+body.playing #stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  box-shadow: inset 0 0 140px 30px rgba(10, 6, 2, .65); }
+body.playing #player-bar { box-shadow: 0 0 0 1px var(--accent), 0 6px 24px rgba(0, 0, 0, .5); }

@@ -19,6 +19,7 @@ export const currentMode = () => mode;
 
 export function setMode(m) {
   if (m !== "play" && state.possessed != null) send({ cmd: "release" });  // leaving play leaves the body
+  if (m === "play" && mode !== "play") before = mode;
   mode = m;
   closeGodMenu();
   for (const b of document.querySelectorAll("#modes button[data-mode]")) b.classList.toggle("on", b.dataset.mode === m);
@@ -34,8 +35,18 @@ function showHint() {
 
 // Called with every frame: keep the toolbar in step with the server (a body can be
 // left with Esc, or die).
+let before = "watch";   // the mode to go back to on leaving a body
+let wasIn = null;
 export function syncMode() {
-  if (state.possessed != null && mode !== "play") setMode("play");
+  const inBody = state.possessed;
+  if (inBody != null && wasIn == null) {          // just became someone: the god steps aside
+    before = mode === "play" ? before : mode;
+    mode = "play";
+    closeGodMenu();
+  } else if (inBody == null && wasIn != null) {   // just left the body: the god is back
+    setMode(before === "play" ? "watch" : before);
+  }
+  wasIn = inBody;
   showHint();
 }
 
@@ -91,8 +102,9 @@ export function initModes() {
   $("gm-buttons").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-power]");
     if (!b || godFor == null) return;
-    if (b.dataset.power === "become") { setMode("play"); send({ cmd: "possess", npc: godFor }); }
-    else send({ cmd: "god", power: b.dataset.power, npc: godFor });
+    const id = godFor;  // (switching mode closes this menu, and forgets who it was for)
+    if (b.dataset.power === "become") { setMode("play"); send({ cmd: "possess", npc: id }); }
+    else send({ cmd: "god", power: b.dataset.power, npc: id });
     closeGodMenu();
   });
   $("gm-say").addEventListener("submit", (e) => {
