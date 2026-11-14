@@ -6,9 +6,13 @@
  * page's controls; the work is in the modules next to it.
  */
 import { $ } from "./config.js";
+import { initMenu, menuOpen, openMenu } from "./menu.js";
+import { initMinimap, toggleMinimap } from "./minimap.js";
 import { connect, send } from "./net.js";
-import { renderTalks, select } from "./panel.js";
+import { initGod, renderTalks, select } from "./panel.js";
+import { initPlay, playing } from "./play.js";
 import { goLive, rp, seek, setDir, step } from "./replay.js";
+import { setSound, soundOn } from "./sound.js";
 import { state } from "./state.js";
 
 $("tl-scrub").oninput = (e) => {
@@ -24,8 +28,10 @@ $("tl-fwd").onclick = () => { if (!rp()) return; setDir(0); step(1); };
 $("tl-live").onclick = goLive;
 $("tl-speed").onchange = (e) => { if (rp()) rp().speed = Number(e.target.value) || 1; };
 document.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-  if (e.key === "," || e.key === "<") {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || menuOpen()) return;
+  if (playing() && e.key === "Escape") return;  // (Esc leaves the body: see play.js)
+  if (e.key === "m" || e.key === "M") toggleMinimap();
+  else if (e.key === "," || e.key === "<") {
     e.preventDefault();
     if (e.shiftKey || e.key === "<") $("tl-rev").click(); else $("tl-back").click();
   } else if (e.key === ".") { e.preventDefault(); $("tl-fwd").click(); }
@@ -33,14 +39,18 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && rp()) { e.preventDefault(); goLive(); }
 });
 
-$("btn-pause").onclick = () => send({ cmd: state.paused ? "resume" : "pause" });
+const showSound = () => {
+  $("btn-sound").textContent = soundOn() ? "🔊" : "🔇";
+  $("btn-sound").classList.toggle("off", !soundOn());
+};
+$("btn-sound").onclick = () => { setSound(!soundOn()); showSound(); };
+showSound();
+
+$("btn-pause").onclick =() => send({ cmd: state.paused ? "resume" : "pause" });
 $("btn-step").onclick = () => send({ cmd: "step" });
 $("speed").oninput = (e) => send({ cmd: "speed", tick_ms: 1050 - Number(e.target.value) });
-$("btn-reset").onclick = () => {
-  const v = $("seed").value;
-  const seed = v === "" || Number(v) === state.seed ? Math.floor(Math.random() * 1e6) : Number(v);
-  send({ cmd: "reset", seed });
-};
+$("btn-reset").onclick = () => openMenu(false);
+$("btn-map").onclick = toggleMinimap;
 $("npc-list").onclick = (e) => {
   const li = e.target.closest("li[data-id]");
   if (li) select(Number(li.dataset.id));
@@ -56,10 +66,14 @@ for (const box of [$("talks"), $("detail")]) box.addEventListener("click", (e) =
   if (a) select(Number(a.dataset.id));
 });
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" && e.target.tagName !== "INPUT") {
+  if (e.code === "Space" && e.target.tagName !== "INPUT" && !menuOpen()) {
     e.preventDefault();
     send({ cmd: state.paused ? "resume" : "pause" });
   }
 });
 
+initMinimap();
+initMenu();
+initPlay();
+initGod();
 connect();

@@ -10,8 +10,10 @@ export const state = {
   bubbles: new Map(), // id -> { el, tick, born }
   talks: [],          // recent exchanges, newest first: { tick, a, b, kind, said, reply }
   graves: [],         // { img, tick }
-  tiles: [],
-  fires: [],          // campfire tile images (animated)
+  possessed: null,    // the villager the player has become (null: none)
+  player: null,       // what that body can do right now (from the server)
+  control: null,      // the server's latest word on itself: paused, speed, which world, start screen or not
+  worldKey: "",       // the world now on show (its ground and objects are rebuilt when this changes)
   portraits: new Map(),
   ws: null,
   latest: null,       // newest frame from the server (state.frame is the one on screen)

@@ -1,6 +1,7 @@
 /* Animations: tweened offsets on sprites, particles, floating text, and the
  * per-event choreography (swings, hits, chops...). */
 import { TILE } from "./config.js";
+import { shakeObject } from "./objects.js";
 import { state } from "./state.js";
 
 // --- animations -----------------------------------------------------------------
@@ -78,12 +79,9 @@ export function slash(sc, x, y, face, delay) {
     duration: 230, ease: "Quad.out", onStart: () => g.setVisible(true), onComplete: () => g.destroy() });
 }
 
+// The tree, bush or whatever stands on a tile shudders.
 export function shakeTile(sc, x, y) {
-  const img = state.tiles[y] && state.tiles[y][x];
-  if (!img || img.getData("shaking")) return;
-  img.setData("shaking", true);
-  sc.tweens.add({ targets: img, x: { from: x * TILE - 1.5, to: x * TILE + 1.5 }, duration: 45, yoyo: true, repeat: 2,
-    onComplete: () => { img.x = x * TILE; img.setData("shaking", false); } });
+  if (state.frame) shakeObject(sc, x, y, state.frame.width);
 }
 
 export const tileCenter = (x, y) => ({ x: x * TILE + TILE / 2, y: y * TILE + TILE / 2 });
@@ -92,6 +90,9 @@ export const faceToward = (s, x) => { if (Math.abs(x - s.tx) > 2) s.face = x < s
 export function playFx(sc, events) {
   if (reduceMotion) return;
   const get = (id) => { const s = state.sprites.get(id); return s && s.sprite.active ? s : null; };
+  // several announcements over one head (two level-ups at once) take turns instead of piling up
+  const said = new Map();
+  const queue = (id) => { const k = said.get(id) || 0; said.set(id, k + 1); return k * 500; };
   const view = sc.cameras.main.worldView;
   for (const e of events) {
     const s = get(e.npc);
@@ -183,6 +184,21 @@ export function playFx(sc, events) {
         }
         break;
       }
+      case "gift": {
+        const b = get(e.target);
+        anim(sc, s, { y: { from: 0, to: -4 } }, 120, { yoyo: true });
+        if (b) {
+          faceToward(s, b.tx); faceToward(b, s.tx);
+          anim(sc, b, { y: { from: 0, to: -5 }, sy: { from: 1, to: 1.06 } }, 140, { yoyo: true, delay: 260 });
+          floatText(sc, b.tx, b.ty - 24 * b.base, `+${e.n} ${e.item}`, "#b8e986", { size: 10, delay: 260 });
+        }
+        break;
+      }
+      case "pickup":
+        anim(sc, s, { sy: { from: 1, to: 0.88 } }, 110, { yoyo: true });
+        floatText(sc, s.tx, s.ty - 26 * s.base,
+                  Object.entries(e.items || {}).map(([k, n]) => `+${n} ${k}`).join(" "), "#ffe08a", { size: 10, delay: 200 });
+        break;
       case "birth": {
         anim(sc, s, { sx: { from: 0.1, to: 1 }, sy: { from: 0.1, to: 1 } }, 520, { ease: "Back.out" });
         for (const pid of e.parents || []) {
@@ -194,7 +210,70 @@ export function playFx(sc, events) {
         }
         break;
       }
+      case "work": {
+        // one swing of the tool while a job is under way (the full flourish plays when it is done)
+        if (e.x != null) faceToward(s, tileCenter(e.x, e.y).x);
+        if (e.kind === "eat") {
+          anim(sc, s, { sy: { from: 1, to: 0.94 }, y: { from: 0, to: 1 } }, 90, { yoyo: true, repeat: 1 });
+        } else if (e.kind === "forage") {
+          anim(sc, s, { sy: { from: 1, to: 0.86 }, sx: { from: 1, to: 1.08 } }, 140, { yoyo: true });
+          if (e.x != null) sc.time.delayedCall(140, () => shakeTile(sc, e.x, e.y));
+        } else {
+          anim(sc, s, { swing: { from: 0, to: 1 }, angle: { from: 0, to: 12 * s.face }, x: { from: 0, to: 3 * s.face } },
+               100, { yoyo: true, ease: "Quad.in" });
+          if (e.x != null) {
+            const c = tileCenter(e.x, e.y);
+            if (e.kind === "chop") sc.time.delayedCall(100, () => shakeTile(sc, e.x, e.y));
+            burst(sc, c.x, c.y + 4, e.kind === "chop" ? [0xc89a62, 0x6d4825] : [0x9a8a78, 0xc8b89a], 3,
+                  { delay: 100, spread: 10, up: 8 });
+          }
+        }
+        break;
+      }
+      case "conceive": {
+        const b = get(e.target);
+        for (const p of [s, b]) {
+          if (!p) continue;
+          anim(sc, p, { y: { from: 0, to: -4 } }, 160, { yoyo: true, repeat: 1 });
+          for (let i = 0; i < 3; i++)
+            floatText(sc, p.tx + (i - 1) * 5, p.ty - 22 * p.base, "♥", "#ff7ab0",
+                      { size: 10, delay: i * 180, rise: 20, dx: (i - 1) * 4, dur: 1100 });
+        }
+        break;
+      }
+      case "levelup": {
+        // a new level of a skill: a little jump, a shower of sparks, and what it was
+        const d = (state.defs && state.defs.skills && state.defs.skills[e.skill]) || { label: e.skill };
+        const delay = queue(e.npc);
+        anim(sc, s, { y: { from: 0, to: -6 }, sy: { from: 1, to: 1.12 } }, 170, { yoyo: true, delay });
+        burst(sc, head.x, head.y - 4, [0xffe08a, 0xf6c04a, 0xffffff], 12,
+              { spread: 16, up: 20, gravity: 14, dur: 800, delay });
+        floatText(sc, s.tx, s.ty - 28 * s.base, `${d.label} ${e.level}!`, "#ffe08a",
+                  { size: 12, rise: 26, dur: 1700, pop: true, delay });
+        break;
+      }
+      case "attrup": {
+        const d = (state.defs && state.defs.attrs && state.defs.attrs[e.attr]) || { label: e.attr };
+        floatText(sc, s.tx, s.ty - 28 * s.base, `+1 ${d.label}`, "#9fe8ff",
+                  { size: 11, rise: 24, dur: 1600, delay: queue(e.npc) });
+        break;
+      }
       case "death":
+        if (e.cause === "lightning") {  // a bolt from a clear sky
+          const top = sc.cameras.main.worldView.y - 20, x = s.tx, y = s.ty - 10;
+          const g = sc.add.graphics().setDepth(21000);
+          const pts = [[x + 6, top]];
+          for (let yy = top + 30; yy < y; yy += 26) pts.push([x + (Math.random() - 0.5) * 22, yy]);
+          pts.push([x, y]);
+          for (const [w, c] of [[6, 0x9fd3ff], [2, 0xffffff]]) {
+            g.lineStyle(w, c, 1);
+            g.beginPath(); g.moveTo(...pts[0]); for (const p of pts.slice(1)) g.lineTo(...p); g.strokePath();
+          }
+          sc.tweens.add({ targets: g, alpha: 0, duration: 420, delay: 120, onComplete: () => g.destroy() });
+          sc.cameras.main.flash(160, 230, 240, 255);
+          sc.cameras.main.shake(220, 0.006);
+          burst(sc, x, s.ty - 4, [0xffffff, 0x9fd3ff, 0x3a3a3a], 16, { spread: 20, up: 18, dur: 700 });
+        }
         // dust when the body lands (see the fall in renderNpcs)
         burst(sc, s.tx + 8 * s.face, s.ty - 2, [0x9a8a78, 0x7a6a58], 8, { delay: 1150, spread: 14, up: 5, gravity: 6, dur: 700 });
         break;

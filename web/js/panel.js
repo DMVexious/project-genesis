@@ -1,12 +1,14 @@
 /* The side panel: stats, population list, inspector, conversations, chronicle. */
 import { $, AGGRO_COLOR, MAX_TALKS, hex } from "./config.js";
+import { send } from "./net.js";
+import { playSelect } from "./sound.js";
 import { state } from "./state.js";
 import { portrait } from "./textures.js";
 import { scene, stageOf } from "./world.js";
 
 // --- side panel ------------------------------------------------------------------
 export const BAR_COLORS = { health: "#d9534f", hunger: "#e0a458", energy: "#6aa6d8", social: "#e07aa8" };
-export const SOURCE_LABEL = { llm: "  🧠 LLM", reflex: "  ⚡ reflex", plan: "  ↻ continuing" };
+export const SOURCE_LABEL = { llm: "  🧠 LLM", reflex: "  ⚡ reflex", plan: "  ↻ continuing", player: "  🎮 you" };
 export const BAR_LABELS = { health: "Health", hunger: "Fullness", energy: "Energy", social: "Social" };
 export const STAGE_ICON = { child: "👶", elder: "🧓", adult: "" };
 export const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -45,9 +47,10 @@ function renderList(npcs) {
     }
     const cls = `${n.id === state.selected ? "sel" : ""} ${n.alive ? "" : "dead"}`.trim();
     if (li.className !== cls) li.className = cls;
+    const role = roleOf(n);
     setHtml(li, `
       <span class="swatch" style="background:${hex(AGGRO_COLOR[n.traits.aggression])}"></span>
-      <span class="name">${esc(n.name)} <small>g${n.generation}</small> ${STAGE_ICON[stageOf(n)]}${n.home ? "🏠" : ""} ${n.status}</span>
+      <span class="name">${esc(n.name)} <small>g${n.generation}</small> ${role ? `<span title="${esc(role.role)}">${role.emoji}</span>` : ""}${STAGE_ICON[stageOf(n)]}${n.home ? "🏠" : ""} ${n.status}</span>
       <span class="minibars">${["health", "hunger", "energy"].map((k) =>
         `<i style="width:${n[k]}%;background:${BAR_COLORS[k]}"></i>`).join("")}</span>
       <span>${n.emoji}</span>`);
@@ -58,14 +61,56 @@ function renderList(npcs) {
   for (const [id, li] of rows) if (!seen.has(id)) { li.remove(); rows.delete(id); }
 }
 
-// What an NPC carries, e.g. "🪵 12 wood · 🍒 3 food · 🗡️ spear".
-function describeInv(inv) {
+// What an NPC carries, as a row of slots: one per kind of item, with a count.
+// (How much fits depends on the NPC: the strong carry more.)
+const INV_SLOTS = 6;
+function invSlots(inv, caps) {
   const items = (state.defs && state.defs.items) || {};
-  const parts = Object.entries(inv || {}).filter(([, n]) => n > 0).map(([k, n]) => {
-    const d = items[k] || { label: k, emoji: "" };
-    return `${d.emoji} ${n > 1 || !d.emoji ? n + " " : ""}${esc(d.label)}`.trim();
+  const keys = [...new Set([...Object.keys(items), ...Object.keys(inv || {})])];
+  const slots = keys.map((k) => {
+    const d = items[k] || { label: k, emoji: "?", cap: 0 };
+    const n = (inv && inv[k]) || 0;
+    const cap = (caps && caps[k]) || d.cap;
+    const full = cap && n >= cap;
+    return `<span class="slot ${n ? "" : "empty"} ${full ? "full" : ""}" title="${esc(d.label)}: ${n}${cap ? ` of ${cap}` : ""}">` +
+      `<span class="ico">${d.emoji}</span>${n ? `<b>${n}</b>` : ""}</span>`;
   });
-  return parts.length ? parts.join(" · ") : "carrying nothing";
+  while (slots.length < INV_SLOTS) slots.push('<span class="slot empty"></span>');
+  return `<div class="inv">${slots.join("")}</div>`;
+}
+
+// What an NPC is known for (its best skill, once good enough), or null.
+function roleOf(n) {
+  const skills = (state.defs && state.defs.skills) || {};
+  return (n.role && skills[n.role]) || null;
+}
+
+// Strength, agility...: what they are made of. Partly inherited, built up by what they do.
+function attrCells(n) {
+  const defs = (state.defs && state.defs.attrs) || {};
+  const max = (state.defs && state.defs.limits && state.defs.limits.attr) || 10;
+  return `<div class="attrs">${Object.entries(defs).map(([k, d]) => {
+    const v = (n.attrs && n.attrs[k]) || 0;
+    return `<div class="attr" title="${esc(d.label)} ${v} of ${max}: ${esc(d.blurb)}">
+      <span class="ico">${d.emoji}</span><b>${v}</b><small>${esc(d.label.slice(0, 3))}</small>
+      <span class="track"><span class="fill" style="width:${(100 * v) / max}%"></span></span></div>`;
+  }).join("")}</div>`;
+}
+
+// Skills they have practised: level, and how far along to the next one.
+function skillRows(n) {
+  const defs = (state.defs && state.defs.skills) || {};
+  const max = (state.defs && state.defs.limits && state.defs.limits.skill) || 10;
+  const rows = Object.entries(defs).filter(([k]) => (n.skills && n.skills[k]) || (n.xp && n.xp[k])).map(([k, d]) => {
+    const level = (n.skills && n.skills[k]) || 0;
+    const [have, need] = (n.xp && n.xp[k]) || [0, 1];
+    const pct = level >= max ? 100 : Math.min(100, (100 * have) / need);
+    return `<div class="bar skill ${n.role === k ? "best" : ""}" title="${esc(d.label)}: ${esc(d.blurb)}${level >= max ? "" : ` (${have} of ${need} to the next level)`}">
+      <span>${d.emoji} ${esc(d.label)}</span>
+      <span class="track"><span class="fill" style="display:block;width:${pct}%"></span></span>
+      <span>${level >= max ? "max" : `Lv ${level}`}</span></div>`;
+  });
+  return rows.length ? rows.join("") : `<div class="hint">Nothing yet. They get better at whatever they do.</div>`;
 }
 
 export function renderPanel(f) {
@@ -83,20 +128,24 @@ export function renderPanel(f) {
   const sel = f.npcs.find((n) => n.id === state.selected);
   const det = $("detail");
   det.hidden = !sel;
-  let detail = "";
+  let detail = "", head = "";
+  updateGod(sel);
   if (sel) {
     const t = sel.traits;
     const parents = sel.parents.map((p) => esc(state.names.get(p) || `#${p}`)).join(" & ") || "first settlers";
     const sp = state.sprites.get(sel.id);
     const img = sp ? portrait(sp.key) : "";
-    detail = `
+    const role = roleOf(sel);
+    head = `
       <div class="who">
         ${img ? `<img class="portrait" src="${img}" alt="">` : ""}
         <div>
           <h3>${esc(sel.name)} ${sel.status} ${sel.emoji}</h3>
-          <div class="look">${esc(stageOf(sel))} · ${esc(describeLook(sel.look))}</div>
+          <div class="role">${role ? `${role.emoji} ${esc(role.role)} · ` : ""}${sel.age} years old${stageOf(sel) === "adult" ? "" : ` (${esc(stageOf(sel))})`}</div>
+          <div class="look">${esc(describeLook(sel.look))}</div>
         </div>
-      </div>
+      </div>`;
+    detail = `
       <div class="traits">${Object.entries(t).map(([slot, v]) =>
         `<span class="trait ${sel.mutated.includes(slot) ? "mut" : ""}" title="${slot}${sel.mutated.includes(slot) ? " (mutation)" : ""}">${v}</span>`).join("")}</div>
       ${sel.belief ? `<div class="persona">🌀 ${esc(sel.name)} ${esc(sel.belief)}.<br>🗣️ They ${esc(sel.voice.replace(/\byourself\b/g, "themself").replace(/\byour\b/g, "their"))}.</div>` : ""}
@@ -104,9 +153,17 @@ export function renderPanel(f) {
         <div class="bar"><span>${BAR_LABELS[k]}</span>
         <span class="track"><span class="fill" style="display:block;width:${sel[k]}%;background:${BAR_COLORS[k]}"></span></span>
         <span>${sel[k]}</span></div>`).join("")}
-      <div class="meta">${describeInv(sel.inv)}</div>
-      <div class="meta">age ${sel.age} · gen ${sel.generation} · ${parents}</div>
+      <div class="sub">Attributes</div>
+      ${attrCells(sel)}
+      <div class="sub">Skills</div>
+      ${skillRows(sel)}
+      <div class="sub">Inventory</div>
+      ${invSlots(sel.inv, sel.caps)}
+      <div class="meta">generation ${sel.generation} · ${parents}</div>
       <div class="meta">${sel.home ? `🏠 home at (${sel.home[0]}, ${sel.home[1]})` : "no home yet"}</div>
+      ${sel.expecting ? `<div class="bar"><span>🤰 Expecting</span>
+        <span class="track"><span class="fill" style="display:block;width:${sel.expecting}%;background:#e07aa8"></span></span>
+        <span>${sel.expecting}%</span></div>` : ""}
       <div class="intent">${sel.alive ? "▶ " + esc(sel.intent || "…") + (SOURCE_LABEL[sel.source] || "") : "died: " + esc(sel.cause)}</div>`;
   }
 
@@ -116,7 +173,8 @@ export function renderPanel(f) {
     detail += `<div class="sub">Recent conversations</div>` +
       (mine.length ? `<ol class="talks">${mine.map(talkHtml).join("")}</ol>` : `<div class="hint">Hasn't spoken to anyone yet.</div>`);
   }
-  setHtml(det, detail);
+  setHtml($("detail-head"), head);
+  setHtml($("detail-body"), detail);
 
   $("banner").hidden = s.population > 0;
   $("banner").textContent = "Extinction. Start a new world →";
@@ -129,7 +187,7 @@ export function renderFeeds(f) {
       if (d.reply) continue;
       const r = f.dialogue.find((x) => x.reply && x.npc === d.target && x.target === d.npc);
       state.talks.unshift({ tick: f.tick, a: d.npc, b: d.target, kind: d.kind, said: d.text, reply: r ? r.text : null,
-                            llm: !!d.llm, replyLlm: !!(r && r.llm) });
+                            llm: !!d.llm, replyLlm: !!(r && r.llm), deal: d.deal || "", player: !!d.player });
     }
     state.talks.length = Math.min(state.talks.length, MAX_TALKS);
     renderTalks();
@@ -143,14 +201,16 @@ export function renderFeeds(f) {
   }
 }
 
-export const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", mate: "💞" };
-export const KIND_VERB = { talk: "to", fight: "attacking", trade: "trading with", mate: "courting" };
+export const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", give: "🎁", mate: "💞", voice: "☁️" };
+export const KIND_VERB = { talk: "to", fight: "attacking", trade: "trading with", give: "giving to", mate: "courting",
+                           voice: "speaks to" };
 
 export function talkHtml(t) {
-  const who = (id) => `<a data-id="${id}">${esc(state.names.get(id) || "?")}</a>`;
+  const who = (id) => (id === -1 ? `<b class="sky">The Voice</b>` : `<a data-id="${id}">${esc(state.names.get(id) || "?")}</a>`);
   return `<li class="talk ${t.kind}">
     <div class="head"><b>${t.tick}</b> ${KIND_ICON[t.kind] || "💬"} ${who(t.a)} <span>${KIND_VERB[t.kind] || "to"}</span> ${who(t.b)}</div>
-    <div class="line ${t.llm ? "llm" : ""}">${who(t.a)}: “${esc(t.said)}”${t.llm ? LLM_MARK : ""}</div>
+    ${t.deal ? `<div class="deal">${esc(t.deal.replace(/\bthem\b/g, state.names.get(t.b) || "them"))}</div>` : ""}
+    <div class="line ${t.llm || t.player ? "llm" : ""}">${who(t.a)}: “${esc(t.said)}”${t.player ? " 🎮" : t.llm ? LLM_MARK : ""}</div>
     ${t.reply ? `<div class="line reply ${t.replyLlm ? "llm" : ""}">${who(t.b)}: “${esc(t.reply)}”${t.replyLlm ? LLM_MARK : ""}</div>` : ""}
   </li>`;
 }
@@ -165,12 +225,55 @@ export function renderTalks() {
 }
 
 export function select(id) {
-  state.selected = state.selected === id ? null : id;
+  focus(state.selected === id && id !== state.possessed ? null : id);
+}
+
+// Select a villager (null: nobody) and keep the camera on them; while playing
+// someone, the camera stays on the player's own body.
+export function focus(id) {
+  state.selected = id;
+  if (id !== null) playSelect();  // (a click also lets the browser start audio)
   const sc = scene();
-  const s = state.sprites.get(state.selected);
+  const s = state.sprites.get(state.possessed != null ? state.possessed : id);
   if (sc && sc.cameras) {
     if (s) sc.cameras.main.startFollow(s.sprite, true, 0.08, 0.08);
     else sc.cameras.main.stopFollow();
   }
   if (state.frame) renderPanel({ ...state.frame, dialogue: [], log: [] });
+}
+
+// --- the god box: become them, heal, feed, smite, and speak ------------------------------
+let godFor;
+function updateGod(sel) {
+  const box = $("god");
+  box.hidden = !sel || !sel.alive;
+  if (box.hidden) return;
+  const me = state.possessed, mine = sel.id === me;
+  const key = `${sel.id}:${me}`;
+  if (godFor === key) return;
+  godFor = key;
+  $("btn-possess").textContent = mine ? "🚪 Leave their body" : me != null ? "🎮 Become them instead" : "🎮 Become them";
+  $("say-form").hidden = mine;
+  $("say-text").placeholder = me != null
+    ? `Say something to ${sel.name} (as ${state.names.get(me) || "you"})…`
+    : `Speak to ${sel.name} from the sky…`;
+}
+
+export function initGod() {
+  $("btn-possess").onclick = () => {
+    const id = state.selected;
+    if (id == null) return;
+    send(id === state.possessed ? { cmd: "release" } : { cmd: "possess", npc: id });
+  };
+  for (const power of ["heal", "feed", "smite"])
+    $(`btn-${power}`).onclick = () => { if (state.selected != null) send({ cmd: "god", power, npc: state.selected }); };
+  $("say-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("say-text").value.trim(), id = state.selected;
+    if (!text || id == null) return;
+    if (state.possessed != null && id !== state.possessed)
+      send({ cmd: "player", order: { kind: "interact", target: id, option: "talk", text } });  // walk over and say it
+    else send({ cmd: "say", npc: id, text });
+    $("say-text").value = "";
+  });
 }

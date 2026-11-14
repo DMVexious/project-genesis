@@ -18,9 +18,12 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from .brain import Canned, Interaction, NpcView, clamp_words, describe_action
-from .engine.defs import (ACTIONS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, INTERACTIONS, ITEMS,
-                          MATURE_AGE, OBJECTS, action_ticks, building_glyphs, same_action)
+from .brain import Canned, Interaction, NpcView, base_option, clamp_words, describe_action
+from .engine import GAME_MAP
+from .engine.path import scan
+from .engine.defs import (ACTIONS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, GESTATION, INTERACTIONS,
+                          ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
+                          items_text, option_text, same_action, speed_factor, years)
 from .memory import Memory
 from .traits import (Genome, belief_text, make_name, random_genome, random_look, random_persona, splice,
                      splice_look, splice_persona, voice_text)
@@ -28,7 +31,8 @@ from .traits import (Genome, belief_text, make_name, random_genome, random_look,
 log = logging.getLogger(__name__)
 
 BUILDING_GLYPHS = building_glyphs()
-LOG_EMOJI = "💀🪦🏠🌀✨" + "".join(sorted({b.emoji for b in BUILDINGS}))  # stripped from news lines
+GROUND = {t.glyph: t.label for t in TERRAIN.values()}  # terrain glyph -> "grass", "shallow water"...
+LOG_EMOJI = "💀🪦🏠🌀✨💞👶🎁🤝🫳⭐⚡❤🍖🎮🗣" + "".join(sorted({b.emoji for b in BUILDINGS}))  # stripped from news lines
 
 
 @dataclass
@@ -45,24 +49,33 @@ class NpcMeta:
     persona: dict = field(default_factory=dict)  # strange belief + way of talking (traits.BELIEFS/VOICES)
 
 
+PLAYER_WORDS = 30         # the most a player's line may run to
+PLAYER_WAIT = 150         # ticks a player's conversation may take before it is dropped
+ANSWER_SECONDS = 25.0     # how long a villager waits for the player to answer them
+WALK_LIMIT = 400          # how far (in steps) the player's "walk there" looks for a way
+GOD_POWERS = ("heal", "feed", "smite")
+
+
 @dataclass
 class SimConfig:
     seed: int = 7
     width: int = 80
     height: int = 56
-    population: int = 16
-    decay_every: int = 3      # ticks per unit of world time (hunger, energy, ageing, regrowth)
+    population: int = 3       # founders; they start together and the village grows from them
+    decay_every: int = 5      # ticks per unit of world time (hunger, energy, ageing, regrowth)
     plan_max_ticks: int = 12  # re-ask the brain at least this often while walking (steps)
     llm_interval: int = 18    # ticks between an NPC's LLM goal checks
+    work_beat: int = 3        # a working NPC swings its tool (animation + sound) every this many ticks
     llm_budget: int = 2       # max brain requests in flight at once
-    talk_budget: int = 3      # max conversations using the LLM at once (each makes up to 5 calls);
+    talk_budget: int = 2      # max conversations using the LLM at once (each makes up to 5 calls);
                               # with the LLM on, extra NPCs do something else instead of talking
-    talk_cooldown: int = 90   # ticks before an NPC starts another conversation (~15 s); keeps it calm
+    talk_cooldown: int = 110  # ticks before an NPC starts another conversation (~30 s); keeps it calm
+    talk_gap: int = 9         # ticks between any two conversations starting, so people take turns
     courtship: int = 2        # affection (friendly exchanges, both ways) needed before "mate" is offered
     think_max_ticks: int = 40 # give up on a brain call after this many ticks (~6 s) and act on reflex
     convert_chance: float = 0.08  # chance a conversation spreads the speaker's belief to the listener
     llm_choices: int = 10     # the LLM is shown at most this many actions (the most appealing ones)
-    map_name: str = "barren"  # world preset (engine.MAPS)
+    map_name: str = GAME_MAP  # world preset (engine.MAPS)
 
 
 class Simulation:
@@ -87,12 +100,17 @@ class Simulation:
         self.memory.reset()
         for task in getattr(self, "pending", {}).values():
             task.cancel()
+        self.epoch = getattr(self, "epoch", 0) + 1  # which world this is: goes up with every new one
         self.state = self.engine.init(self.cfg.seed, self.cfg.width, self.cfg.height,
                                       self.cfg.population, self.cfg.decay_every, self.cfg.map_name)
         self.commands: list[dict] = []  # player/world commands waiting for the next tick
         self.meta: dict[int, NpcMeta] = {}
         for n in self.state["npcs"]:
-            self._register(n["id"], random_genome(self.rng), look=random_look(self.rng),
+            genome = random_genome(self.rng)
+            if self.cfg.population <= 4 and genome.aggression == "Bloodthirsty":
+                # a handful of founders with a killer among them is a very short story
+                genome = dataclasses.replace(genome, aggression="Hostile")
+            self._register(n["id"], genome, look=random_look(self.rng),
                            persona=random_persona(self.persona_rng))
         self.totals = {"births": 0, "deaths": 0, **{b.stat: 0 for b in BUILDINGS if b.stat},
                        "fights": 0, "trades": 0}
@@ -100,7 +118,7 @@ class Simulation:
         self.vacant: set[tuple[int, int]] = set()    # huts whose owner died without an heir
         self.dialogue: list[dict] = []
         self.plans: dict[int, dict] = {}
-        self.decision_stats = {"llm": 0, "reflex": 0, "plan": 0}
+        self.decision_stats = {"llm": 0, "reflex": 0, "plan": 0, "player": 0}
         self.last_llm: dict[int, int] = {}
         self.llm_neighbours: dict[int, frozenset] = {}  # who was adjacent at the last LLM decision
         self._last_seen: dict[int, tuple[int, frozenset]] = {}
@@ -115,6 +133,26 @@ class Simulation:
         self._llm_backoff = 0
         self.ready: dict[int, dict] = {}               # finished decisions waiting to be applied
         self.busy_until: dict[int, int] = {}           # tick each NPC may act again
+        self.busy_from: dict[int, int] = {}            # tick its current action began (for the time bar)
+        self.working: dict[int, dict] = {}             # timed work in progress: {act, start, end, source}
+        self.last_any_talk = -10**9                    # tick the latest conversation started
+        self.talk_wait: dict[int, int] = {}            # ticks an NPC has waited for its turn to speak
+        self.roles: dict[int, str] = {}                # what each NPC is known for (its best skill)
+        self.quiet: set[str] = set()                   # chronicle lines too small to be village news
+        self._stats: dict[int, dict] = {}              # the living, by id, as of this tick
+        # the player: who they have become (if anyone), what they told that body to do next,
+        # and what they should be told (a refusal, an unreachable spot...)
+        self.possessed: int | None = None
+        self.order: dict | None = None
+        self.note: tuple[int, str] | None = None
+        # someone speaking to the player's body, waiting for the player to answer:
+        # {"from": id, "said": str, "option": str, "consent": bool, "reply": Future}
+        self.incoming: dict | None = None
+        self.voice_asks: list[tuple[int, str]] = []     # what the voice from the sky said, to whom
+        self.voices: list[asyncio.Future] = []          # answers to it, being written
+        self.voice_lines: list[dict] = []               # ...and those ready to show
+        self.god_log: list[str] = []                    # what the gods did since the last tick
+        self.work_fx: list[dict] = []                # this tick's tool swings of NPCs at work
         self.activity: dict[int, str] = {}             # what each NPC is doing right now
         self.intent: dict[int, str] = {}
         self.source: dict[int, str] = {}
@@ -129,16 +167,21 @@ class Simulation:
     def names(self) -> dict[int, str]:
         return {i: m.name for i, m in self.meta.items()}
 
-    def view(self, n: dict) -> NpcView:
+    def view(self, n: dict, actions: bool = True) -> NpcView:
+        """What a brain may know about an NPC. ``actions=False`` leaves the action
+        list empty, for NPCs that are busy and not about to choose anything."""
         m = self.meta[n["id"]]
         x0, y0 = n["x"], n["y"]
-        rows = [row[max(0, x0 - 5):x0 + 6] for row in self.state["tiles"][max(0, y0 - 5):y0 + 6]]
-        count = lambda chars: sum(r.count(c) for r in rows for c in chars)  # noqa: E731
-        nearby = {key: count(glyphs) for key, glyphs in BUILDING_GLYPHS.items()}
+        nearby = {}
+        if actions:  # (what stands around only matters to someone choosing what to do)
+            rows = [row[max(0, x0 - 5):x0 + 6] for row in self.state["tiles"][max(0, y0 - 5):y0 + 6]]
+            count = lambda chars: sum(r.count(c) for r in rows for c in chars)  # noqa: E731
+            nearby = {key: count(glyphs) for key, glyphs in BUILDING_GLYPHS.items()}
         home = self.homes.get(n["id"])
         dist = None if home is None else abs(home[0] - x0) + abs(home[1] - y0)
-        return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(n["id"], []),
-                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona)
+        ground = GROUND.get(self.state["terrain"][y0][x0], "")
+        return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(n["id"], []) if actions else [],
+                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona, ground)
 
     # --- outside intervention -----------------------------------------------------
     def enqueue(self, cmd: dict):
@@ -168,9 +211,10 @@ class Simulation:
         await asyncio.sleep(0)  # let finished brain tasks deliver their results
         self._drain_commands()
         names = self.names()
-        living = {n["id"]: n for n in self.alive()}
-        views = {nid: self.view(n) for nid, n in living.items()}
+        living = self._stats = {n["id"]: n for n in self.alive()}
         now = self.state["tick"] + 1  # the tick about to be executed
+        # (only NPCs free to act this tick need their action list: working it out costs a path search)
+        views = {nid: self.view(n, self.busy_until.get(nid, 0) <= now) for nid, n in living.items()}
         self._harvest(living)
         # Someone being spoken to waits for the speaker to finish (the LLM takes a few
         # seconds to write the lines). Without this, partners wandered off mid-proposal:
@@ -183,8 +227,24 @@ class Simulation:
         sources: dict[int, str] = {}
         lines: dict[int, dict] = {}
         candidates: list[tuple[tuple, NpcView]] = []
+        finishing: set[int] = set()  # NPCs whose timed work is done: it takes effect this tick
+        for nid in [i for i in self.working if i not in living]:
+            del self.working[nid]
+        if self.possessed is not None and self.possessed not in living:  # the body died under the player
+            self._note(now, "You died.")
+            self.release()
         for nid, v in views.items():
             if self.busy_until.get(nid, 0) > now:
+                continue
+            work = self.working.pop(nid, None)
+            if work is not None:
+                idx = next((i for i, a in enumerate(v.actions) if same_action(a, work["act"])), None)
+                if idx is not None:  # (None: the tree was felled, the wood spent... the effort is lost)
+                    choices[nid], sources[nid] = (idx, 0), work["source"]
+                    finishing.add(nid)
+                    continue
+            if nid == self.possessed:
+                self._player_turn(v, now, choices, sources, lines)  # the player decides, never a brain
                 continue
             if nid in self.pending:
                 if not self._give_up_thinking(v, now):
@@ -225,19 +285,32 @@ class Simulation:
             act = views[nid].actions[idx]
             if act["kind"] == "interact" and nid not in lines:
                 llm_on = self.reflex is not self.brain
-                cooling = now - self.last_talk.get(nid, -10**9) < self.cfg.talk_cooldown
-                busy = self.llm_talks >= self.cfg.talk_budget
-                if llm_on and not self.llm_paused() and sources.get(nid) != "llm" and (cooling or busy):
-                    # Every line should be the LLM's: with no free LLM slot (or a recent
-                    # chat) the NPC does something else instead of saying a canned line.
-                    # (If the LLM is down altogether, canned lines are the fallback.)
-                    avoid = frozenset({"interact", "goto_npc", "build"})
+                # People take turns: an NPC rests between the conversations it starts, and
+                # two conversations never begin at the same moment. (Starting a family is
+                # rare enough to be worth interrupting for.)
+                cooling = (now - self.last_talk.get(nid, -10**9) < self.cfg.talk_cooldown
+                           and "mate" not in act["options"] and sources.get(nid) != "llm")
+                crowded = now - self.last_any_talk < self.cfg.talk_gap
+                # Every line should be the LLM's: with no free LLM slot the NPC does something
+                # else instead of saying a canned line. (If the LLM is down altogether, canned
+                # lines are the fallback.)
+                busy = llm_on and not self.llm_paused() and self.llm_talks >= self.cfg.talk_budget
+                if (crowded or busy) and sources.get(nid) == "llm" and self.talk_wait.get(nid, 0) < 12:
+                    # The LLM decided to speak: wait a moment for a turn rather than drop it.
+                    self.talk_wait[nid] = self.talk_wait.get(nid, 0) + 1
+                    self.ready[nid] = {"type": "act", "action": act, "source": "llm"}
+                    del choices[nid], sources[nid]
+                    continue
+                if cooling or crowded or busy:
+                    self.talk_wait.pop(nid, None)
+                    avoid = frozenset({"interact", "goto_npc"} | ({"build"} if llm_on else set()))
                     choices[nid] = (self.reflex.pick_action(views[nid], avoid), 0)
                     sources[nid] = "reflex"
                     self._commit_plan(views[nid], views[nid].actions[choices[nid][0]])
                     continue
                 del choices[nid]
-                self.last_talk[nid] = now
+                self.talk_wait.pop(nid, None)
+                self.last_talk[nid] = self.last_any_talk = now
                 use_llm = llm_on
                 self._spawn(nid, self._interaction(views, nid, act, sources.pop(nid, "reflex"), use_llm), "interact")
                 self.listening_to[nid] = act["target"]
@@ -245,31 +318,349 @@ class Simulation:
                     self.llm_talks += 1
                     self.pending[nid].add_done_callback(self._talk_done)
 
-        for nid in choices:
+        self.started = {}
+        for nid in list(choices):
+            if nid in finishing:
+                continue  # decided (and counted) when the work began
             v = views[nid]
+            act = v.actions[choices[nid][0]]
             self.decision_stats[sources[nid]] += 1
-            self.intent[nid] = describe_action(v.actions[choices[nid][0]], names, living[nid])
+            self.intent[nid] = describe_action(act, names, living[nid])
             self.source[nid] = sources[nid]
             self._last_seen[nid] = (living[nid]["health"], self._neighbours(v))
+            if ACTIONS[act["kind"]].timed:
+                # Work takes time: the NPC is busy until it is done, and only then does the
+                # engine carry it out (see `finishing` above).
+                del choices[nid]
+                dur = self._duration(nid, act)
+                self.working[nid] = {"act": act, "start": now, "end": now + dur, "source": sources[nid]}
+                self._occupy(nid, act["kind"], now, dur)
 
         # 5. Execution.
         self.state = self.engine.step(choices)
-        self.started = {}
-        for nid, (idx, _) in choices.items():
+        for nid, (idx, opt) in choices.items():
             act = views[nid].actions[idx]
-            dur = self._duration(nid, act)
-            self.busy_until[nid] = now + dur
-            self.activity[nid] = act["kind"]
-            self.started[nid] = dur
+            if nid in finishing:
+                self.started[nid] = 1
+                continue
+            if act["kind"] == "interact":
+                # both sides are taken up by it: the other one stays and listens
+                option = act["options"][opt] if 0 <= opt < len(act["options"]) else "talk"
+                option = base_option(option)
+                dur = max(1, round(INTERACTIONS[option].ticks * self.meta[nid].pace))
+                self._occupy(nid, option, now, dur)
+                other = act["target"]
+                if other in living and other not in self.working:
+                    self._occupy(other, option if option == "mate" else "listen", now, dur, started=False)
+                    self.plans.pop(other, None)
+                continue
+            self._occupy(nid, act["kind"], now, self._duration(nid, act))
+        beat = self.cfg.work_beat
+        self.work_fx = [{"type": "work", "npc": nid, "kind": w["act"]["kind"], "what": w["act"].get("what", ""),
+                         "x": w["act"].get("x"), "y": w["act"].get("y")}
+                        for nid, w in self.working.items()
+                        if w["end"] - now > 1 and (now - w["start"]) % beat == 0]
 
         # 6. Memory logging + births.
-        log_lines = self._process_events(self.state["events"], lines, now)
+        log_lines = self.god_log + self._process_events(self.state["events"], lines, now)
+        self.god_log = []
+        self._collect_voices(now)
         for line in log_lines:
-            if " talks to " not in line:
+            if " talks to " not in line and line not in self.quiet:
                 self.news.append(line.lstrip(LOG_EMOJI + "️ ").strip())
         if now % 10 == 0:  # embedding is costly; batch it (recall() flushes first anyway)
             self._flush_memory()
         return self._frame(lines, log_lines)
+
+    # --- the player ------------------------------------------------------------------
+    # The player may become any villager: that body then does only what the
+    # player says (walk somewhere, chop, eat, talk, hit...), at the same pace and
+    # by the same rules as everyone else. Or, as a god, speak to anyone from the
+    # sky, and heal, feed or strike them down.
+
+    def possess(self, nid: int) -> bool:
+        if not any(n["id"] == nid and n["alive"] for n in self.state["npcs"]):
+            return False
+        if self.possessed is not None:
+            self.release()
+        self.possessed, self.order = nid, None
+        task = self.pending.pop(nid, None)  # whatever it was thinking about, it is not its own mind now
+        if task is not None:
+            task.cancel()
+        self.pending_since.pop(nid, None)
+        self.ready.pop(nid, None)
+        self.plans.pop(nid, None)
+        self.enqueue({"op": "control", "npc": nid, "on": True})
+        self.god_log.append(f"🎮 You become {self.meta[nid].name}")
+        return True
+
+    def release(self):
+        if self.possessed is None:
+            return
+        self.enqueue({"op": "control", "npc": self.possessed, "on": False})
+        if self.incoming is not None and not self.incoming["reply"].done():
+            self.incoming["reply"].set_result({"text": "", "accept": False})
+        if self.possessed in self.meta:
+            self.god_log.append(f"🎮 You leave {self.meta[self.possessed].name}'s body")
+        self.pending.pop(self.possessed, None)
+        self.possessed = self.order = None
+
+    def command(self, order: dict) -> bool:
+        """What the player tells their body to do next (it replaces any earlier order):
+        {"kind": "act", "action": {...}}       one of the actions on offer
+        {"kind": "step", "dx": 1, "dy": 0}      one step
+        {"kind": "walk", "x": 10, "y": 4}       walk there (and, if something stands there, use it)
+        {"kind": "interact", "target": id, "option": "talk" | "fight" | "trade:wood:food"..., "text": "..."}
+        """
+        if self.possessed is None or not isinstance(order, dict):
+            return False
+        kind = order.get("kind")
+        if kind == "act" and isinstance(order.get("action"), dict) and order["action"].get("kind") in ACTIONS:
+            self.order = {"kind": "act", "action": order["action"]}
+        elif kind == "step" and (order.get("dx"), order.get("dy")) in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            self.order = {"kind": "step", "dx": order["dx"], "dy": order["dy"]}
+        elif kind == "walk" and isinstance(order.get("x"), int) and isinstance(order.get("y"), int):
+            self.order = {"kind": "walk", "x": order["x"], "y": order["y"]}
+        elif kind == "interact" and order.get("target") in self.meta and order.get("target") != self.possessed:
+            self.order = {"kind": "interact", "target": order["target"], "option": str(order.get("option", "talk")),
+                          "text": clamp_words(str(order.get("text", "")).strip(), PLAYER_WORDS)}
+        else:
+            return False
+        return True
+
+    def _note(self, tick: int, text: str):
+        self.note = (tick, text)
+
+    def _cells_around(self, x: int, y: int, reach: int) -> list[int]:
+        """Walkable tiles within ``reach`` of (x, y) (all eight ways), as tile indices."""
+        w = self.engine.world
+        return [w.idx(xx, yy) for yy in range(y - reach, y + reach + 1) for xx in range(x - reach, x + reach + 1)
+                if (xx, yy) != (x, y) and w.passable(xx, yy)]
+
+    def _walk_toward(self, v: NpcView, cells: list[int], choices, sources) -> bool | None:
+        """Take the first step of the way to the nearest of ``cells``. Returns True
+        once there, False if a step was taken, None if there is no way."""
+        w = self.engine.world
+        if w.idx(v.stats["x"], v.stats["y"]) in cells:
+            return True
+        hit = scan(w, v.stats["x"], v.stats["y"], (), [], WALK_LIMIT, cells).get("cell")
+        if hit is None:
+            return None
+        idx = next((i for i, a in enumerate(v.actions) if a["kind"] == "step" and (a["dx"], a["dy"]) == hit[1:3]), None)
+        if idx is None:
+            return None
+        choices[v.id], sources[v.id] = (idx, 0), "player"
+        return False
+
+    def _player_turn(self, v: NpcView, now: int, choices, sources, lines):
+        nid = v.id
+        if nid in self.pending:  # waiting for the other one to answer
+            if now - self.pending_since.get(nid, now) > PLAYER_WAIT:
+                self.pending.pop(nid).cancel()
+                self._note(now, "They never answered.")
+            return
+        ready = self.ready.pop(nid, None)
+        if ready is not None:
+            if not self._apply_ready(v, ready, choices, sources, lines):
+                self._note(now, "They walked off before you could.")
+            return
+        order = self.order
+        if order is None:
+            return  # idle: the body stands and waits for the player
+        kind = order["kind"]
+        if kind == "act":
+            self.order = None
+            idx = next((i for i, a in enumerate(v.actions) if same_action(a, order["action"])), None)
+            if idx is None:
+                self._note(now, "You can't do that right now.")
+                return
+            choices[nid], sources[nid] = (idx, 0), "player"
+            self._commit_plan(v, v.actions[idx])
+            self.plans.pop(nid, None)
+        elif kind == "step":
+            self.order = None
+            idx = next((i for i, a in enumerate(v.actions)
+                        if a["kind"] == "step" and (a["dx"], a["dy"]) == (order["dx"], order["dy"])), None)
+            if idx is not None:
+                choices[nid], sources[nid] = (idx, 0), "player"
+        elif kind == "walk":
+            w = self.engine.world
+            x, y = order["x"], order["y"]
+            if not w.inb(x, y):
+                self.order = None
+                return
+            # a walkable spot: go there; something standing there: go next to it, then use it
+            target = [w.idx(x, y)] if w.passable(x, y) else self._cells_around(x, y, 1)
+            got = self._walk_toward(v, target, choices, sources)
+            if got is None:
+                self.order = None
+                self._note(now, "You can't get there.")
+            elif got:
+                self.order = None
+                use = next((i for i, a in enumerate(v.actions)
+                            if a.get("x") == x and a.get("y") == y and a["kind"] in ("chop", "forage")), None)
+                if use is not None:  # (a tree: chop it; a bush: pick it)
+                    choices[nid], sources[nid] = (use, 0), "player"
+        elif kind == "interact":
+            target = next((n for n in self.state["npcs"] if n["id"] == order["target"] and n["alive"]), None)
+            if target is None:
+                self.order = None
+                self._note(now, "They're gone.")
+                return
+            act = next((a for a in v.actions if a["kind"] == "interact" and a["target"] == target["id"]), None)
+            if act is None:  # not close enough yet: walk over
+                if self._walk_toward(v, self._cells_around(target["x"], target["y"], 1), choices, sources) is None:
+                    self.order = None
+                    self._note(now, f"You can't reach {self.meta[target['id']].name}.")
+                return
+            self.order = None
+            option = order["option"]
+            if option not in act["options"]:  # "trade" alone means the first trade on offer
+                option = next((o for o in act["options"] if base_option(o) == option), None)
+            if option is None:
+                self._note(now, f"You can't {order['option']} with {self.meta[target['id']].name} right now.")
+                return
+            self._spawn(nid, self._player_interaction(v, act, option, order["text"]), "interact")
+            self.listening_to[nid] = target["id"]
+            self.last_talk[nid] = now
+
+    async def _player_interaction(self, me: NpcView, act: dict, option: str, text: str) -> dict:
+        """The player, in someone's body, says or does something to another villager,
+        who always answers (written by the LLM when there is one)."""
+        target = next(n for n in self.state["npcs"] if n["id"] == act["target"])
+        other = self.view(target, actions=False)
+        their = await self._recall(other.id, me.id)
+        rev = Interaction(other, me, [option], [m.text for m in their], self.memory.grudge(other.id, me.id),
+                          list(self.news))
+        context, key = option, base_option(option)
+        heard = text or {"fight": "(says nothing, just comes at you)"}.get(key, "(says nothing)")
+        if INTERACTIONS[key].consent:
+            judge = self.reflex if key == "mate" else self.brain
+            if not await judge.consent(rev, option, heard):
+                what = {"mate": "start a family"}.get(key, key)
+                self.memory.log(Memory(me.id, other.id, self.state["tick"], "refused",
+                                       f"{other.name} refused to {what} with me.", -1))
+                self._note(self.state["tick"], f"{other.name} said no.")
+                context, option = f"refused_{key}", "talk"
+        replier = self.brain if hasattr(self.brain, "reply") else self.reflex
+        reply = await replier.reply(rev, heard, context)
+        return {"type": "interact", "action": act, "option": option, "source": "player",
+                "line": {"npc": me.id, "target": other.id, "text": text, "reply": clamp_words(reply),
+                         "llm": False, "reply_llm": not isinstance(reply, Canned), "player": True}}
+
+    async def _player_answers(self, act, me: NpcView, player: NpcView, option: str, said: str, said_llm: bool,
+                              source: str) -> dict:
+        """A villager speaks to the body the player is in: show the player what they
+        said (and what they want), and wait for the player's answer."""
+        key = base_option(option)
+        fut = asyncio.get_running_loop().create_future()
+        self.incoming = {"from": me.id, "said": said, "option": option, "consent": INTERACTIONS[key].consent,
+                         "want": option_text(option, mine=False) if key != "talk" else "", "reply": fut}
+        try:
+            answer = await asyncio.wait_for(fut, ANSWER_SECONDS)
+        except asyncio.TimeoutError:
+            answer = {"text": "", "accept": False}
+        finally:
+            if self.incoming is not None and self.incoming["reply"] is fut:
+                self.incoming = None
+        if INTERACTIONS[key].consent and not answer.get("accept"):
+            what = {"mate": "start a family"}.get(key, key)
+            self.memory.log(Memory(me.id, player.id, self.state["tick"], "refused",
+                                   f"{player.name} refused to {what} with me.", -1))
+            option = "talk"
+        return {"type": "interact", "action": act, "option": option, "source": source,
+                "line": {"npc": me.id, "target": player.id, "text": said, "reply": answer.get("text", ""),
+                         "llm": said_llm, "reply_llm": False, "player_reply": True}}
+
+    def answer(self, text: str, accept: bool = False) -> bool:
+        """The player's answer to whoever is speaking to their body."""
+        if self.incoming is None or self.incoming["reply"].done():
+            return False
+        self.incoming["reply"].set_result({"text": clamp_words(str(text).strip(), PLAYER_WORDS),
+                                           "accept": bool(accept)})
+        return True
+
+    def say(self, nid: int, text: str) -> bool:
+        """The player, as a voice from the sky, speaks to a villager, who answers."""
+        text = clamp_words(str(text).strip(), PLAYER_WORDS)
+        n = next((n for n in self.state["npcs"] if n["id"] == nid and n["alive"]), None)
+        if n is None or not text or nid == self.possessed:
+            return False
+        self.voice_asks.append((nid, text))  # (answered from the tick loop: see _collect_voices)
+        return True
+
+    async def _answer_voice(self, n: dict, text: str) -> dict:
+        v = self.view(n, actions=False)
+        before = [m.text for m in await self._recall(n["id"], -1)]
+        line = await self.brain.answer_sky(v, text, before, list(self.news)) if hasattr(self.brain, "answer_sky") \
+            else "Who said that?!"
+        return {"npc": n["id"], "said": text, "reply": clamp_words(line), "llm": not isinstance(line, Canned)}
+
+    def _collect_voices(self, tick: int):
+        for nid, text in self.voice_asks:
+            n = self._stats.get(nid)
+            if n is not None:
+                self.voices.append(asyncio.ensure_future(self._answer_voice(n, text)))
+        self.voice_asks = []
+        for task in [t for t in self.voices if t.done()]:
+            self.voices.remove(task)
+            if task.cancelled() or task.exception() is not None:
+                continue
+            r = task.result()
+            if r["npc"] not in self._stats:
+                continue  # died before they could answer
+            self._remember(r["npc"], -1, tick, "voice", f'A voice from the sky told me: "{r["said"]}"', 0)
+            self._remember(r["npc"], -1, tick, "voice", f'I answered the voice: "{r["reply"]}"', 0)
+            self.voice_lines.append(r)
+
+    def god(self, power: str, nid: int) -> bool:
+        """Heal, feed or strike down a villager."""
+        n = next((n for n in self.state["npcs"] if n["id"] == nid and n["alive"]), None)
+        if n is None or power not in GOD_POWERS:
+            return False
+        name = self.meta[nid].name
+        if power == "heal":
+            for stat in ("health", "energy"):
+                self.enqueue({"op": "stat", "npc": nid, "stat": stat, "value": 100})
+            self.god_log.append(f"❤️ The gods heal {name}")
+        elif power == "feed":
+            self.enqueue({"op": "stat", "npc": nid, "stat": "hunger", "value": 100})
+            self.enqueue({"op": "give", "npc": nid, "item": "food", "n": 3})
+            self.god_log.append(f"🍖 The gods feed {name}")
+        else:
+            self.enqueue({"op": "kill", "npc": nid, "cause": "lightning"})
+        return True
+
+    def _player_frame(self) -> dict | None:
+        """What the player's body can do right now, for the controls."""
+        pid = self.possessed
+        me = next((n for n in self.state["npcs"] if n["id"] == pid and n["alive"]), None) if pid is not None else None
+        if me is None:
+            return None
+        names = self.names()
+        acts = []
+        for i, a in enumerate(self.state["actions"].get(pid, [])):
+            if a["kind"] in ("step", "goto", "goto_npc", "wander"):
+                continue  # (walking is done by clicking the ground or with the keys)
+            entry = {"i": i, "kind": a["kind"], "label": describe_action(a, names, me), "action": a}
+            if a["kind"] == "interact":
+                entry["choices"] = [{"option": o, "label": option_text(o)} for o in a["options"]]
+            acts.append(entry)
+        tick = self.state["tick"]
+        inc = self.incoming
+        heard = None if inc is None else {"from": inc["from"], "name": names.get(inc["from"], "?"), "said": inc["said"],
+                                          "want": inc["want"], "consent": inc["consent"]}
+        return {"id": pid, "name": self.meta[pid].name, "actions": acts, "incoming": heard,
+                "order": self.order["kind"] if self.order else "",
+                "note": self.note[1] if self.note and tick - self.note[0] < 25 else ""}
+
+    def _occupy(self, nid: int, doing: str, now: int, dur: int, started: bool = True):
+        """Mark an NPC as busy with something for ``dur`` ticks."""
+        self.busy_from[nid] = now
+        self.busy_until[nid] = max(now + dur, self.busy_until.get(nid, 0) if not started else 0)
+        self.activity[nid] = doing
+        if started:
+            self.started[nid] = dur
 
     def _flush_memory(self):
         # Embedding a batch can take a few hundred ms; do it off the event loop
@@ -295,6 +686,8 @@ class Simulation:
         # the dialogue for an interaction a reflex just chose, can still land)
         if waited < self.cfg.think_max_ticks and not (in_danger and waited >= 5):
             return False
+        if self.incoming is not None and self.incoming["from"] == v.id and not in_danger:
+            return False  # waiting for the player to answer (they get ANSWER_SECONDS)
         self.pending.pop(v.id).cancel()
         self.pending_since.pop(v.id, None)
         self.last_llm[v.id] = now
@@ -316,7 +709,10 @@ class Simulation:
         return (self.state["tick"] if tick is None else tick) < self.llm_paused_until
 
     def _duration(self, nid: int, act: dict) -> int:
-        return max(1, round(action_ticks(act) * self.meta[nid].pace * self.rng.uniform(0.75, 1.35)))
+        """How many ticks an action takes this NPC: its base length, their own
+        pace, how practised and how able they are, and a little chance."""
+        skill = speed_factor(self._stats.get(nid, {}), act)
+        return max(1, round(action_ticks(act) * self.meta[nid].pace * skill * self.rng.uniform(0.75, 1.35)))
 
     def _reflex(self, v: NpcView, choices, sources):
         # What to build is a deliberate choice: while an LLM is answering, only it
@@ -414,11 +810,14 @@ class Simulation:
         rev = Interaction(other, me, options, [m.text for m in their],
                           self.memory.grudge(other.id, nid), news)
         context = option
-        judge = self.reflex if option == "mate" else brain
-        if INTERACTIONS[option].consent and not await judge.consent(rev, option, said):
+        if other.id == self.possessed:  # speaking to the player: the player answers
+            return await self._player_answers(act, me, other, option, said, said_llm, source)
+        judge = self.reflex if base_option(option) == "mate" else brain
+        if INTERACTIONS[base_option(option)].consent and not await judge.consent(rev, option, said):
+            what = {"mate": "start a family"}.get(base_option(option), base_option(option))
             self.memory.log(Memory(nid, other.id, self.state["tick"], "refused",
-                                   f"{other.name} refused to {option} with me.", -1))
-            context, option = f"refused_{option}", "talk"
+                                   f"{other.name} refused to {what} with me.", -1))
+            context, option = f"refused_{base_option(option)}", "talk"
         # the listener always answers, so every encounter is an exchange, not a monologue
         replier = brain if hasattr(brain, "reply") else self.reflex
         reply = await replier.reply(rev, said, context)
@@ -497,10 +896,25 @@ class Simulation:
     def _process_events(self, events: list[dict], lines: dict[int, dict], tick: int) -> list[str]:
         nm = lambda i: self.meta[i].name if i in self.meta else f"#{i}"  # noqa: E731
         out = []
+        self.quiet = set()
         for e in events:
             t, a = e["type"], e.get("npc", -1)
             if t == "arrive":
                 out.append(f"✨ {nm(a)} appears out of nowhere")
+            elif t == "levelup":
+                spec = SKILLS[e["skill"]]
+                role = next((n["role"] for n in self.state["npcs"] if n["id"] == a), "")
+                if role and role != self.roles.get(a):  # known for something new: that is news
+                    self.roles[a] = role
+                    out.append(f"⭐ {nm(a)} is now known as a {SKILLS[role].role.lower()}")
+                else:
+                    out.append(f"⭐ {nm(a)} reaches {spec.label.lower()} level {e['level']}")
+                    if e["level"] < 5:
+                        self.quiet.add(out[-1])
+            elif t == "attrup":
+                spec = ATTRS[e["attr"]]
+                out.append(f"⭐ {nm(a)}'s {spec.label.lower()} grows to {e['value']}")
+                self.quiet.add(out[-1])
             elif t == "talk":
                 said = lines.get(a, {}).get("text", "")
                 reply = lines.get(a, {}).get("reply")
@@ -530,9 +944,29 @@ class Simulation:
             elif t == "trade":
                 b = e["target"]
                 self.totals["trades"] += 1
-                self._remember(a, b, tick, "trade", f"I traded fairly with {nm(b)}.", 2)
-                self._remember(b, a, tick, "trade", f"{nm(a)} traded fairly with me.", 2)
-                out.append(f"{nm(a)} trades {e['gave']} with {nm(b)}")
+                gave, got = items_text({e["gave"]: e["gave_n"]}), items_text({e["got"]: e["got_n"]})
+                self._remember(a, b, tick, "trade", f"I traded {nm(b)} my {gave} for {got}. Fair deal.", 2)
+                self._remember(b, a, tick, "trade", f"{nm(a)} traded me {gave} for my {got}. Fair deal.", 2)
+                out.append(f"🤝 {nm(a)} trades {gave} for {nm(b)}'s {got}")
+            elif t == "gift":
+                b = e["target"]
+                what = items_text({e["item"]: e["n"]})
+                self._remember(b, a, tick, "gift", f"{nm(a)} gave me {what} and asked for nothing.", 3)
+                self._remember(a, b, tick, "gift", f"I gave {nm(b)} {what}.", 1)
+                out.append(f"🎁 {nm(a)} gives {nm(b)} {what}")
+            elif t == "pickup":
+                owner = e.get("owner", -1)
+                if owner not in (-1, a) and owner in self.meta and any(n["id"] == owner and n["alive"]
+                                                                       for n in self.state["npcs"]):
+                    what = items_text(e["items"])  # someone else's: they will remember it
+                    self._remember(owner, a, tick, "theft", f"{nm(a)} took the {what} I left on the ground.", -2)
+                    self._remember(a, owner, tick, "theft", f"I took the {what} {nm(owner)} left lying around.", 0)
+                    out.append(f"🫳 {nm(a)} takes {what} that {nm(owner)} left on the ground")
+            elif t == "conceive":
+                b = e["target"]
+                for p, q in ((a, b), (b, a)):
+                    self._remember(p, q, tick, "mate", f"{nm(q)} and I are going to have a child.", 3)
+                out.append(f"💞 {nm(a)} and {nm(b)} are expecting a child")
             elif t == "birth":
                 pa, pb = e["parents"]
                 genome, mutated = splice(self.meta[pa].genome, self.meta[pb].genome, self.rng)
@@ -543,11 +977,11 @@ class Simulation:
                                        born_tick=tick, mutated=mutated, look=look, persona=persona)
                 self.totals["births"] += 1
                 for p, q in ((pa, pb), (pb, pa)):
-                    self._remember(p, q, tick, "mate", f"{nm(q)} and I had a child, {child.name}.", 3)
+                    self._remember(p, q, tick, "mate", f"{nm(q)} and I had a child, {child.name}.", 1)
                     self._remember(p, a, tick, "family", f"{child.name} is my child.", 3)
                     self._remember(a, p, tick, "family", f"{nm(p)} is my parent.", 3)
                 mut = f" (mutation: {', '.join(mutated)})" if mutated else ""
-                out.append(f"{child.name} is born to {nm(pa)} & {nm(pb)} "
+                out.append(f"👶 {child.name} is born to {nm(pa)} & {nm(pb)} "
                            f"[{', '.join(genome.traits())}]{mut}")
             elif t == "death":
                 self.totals["deaths"] += 1
@@ -556,6 +990,8 @@ class Simulation:
                     out.append(f"💀 {nm(a)} was killed by {nm(e['killer'])}")
                 elif e["cause"] == "old age":
                     out.append(f"🪦 {nm(a)} died peacefully of old age")
+                elif e["cause"] == "lightning":
+                    out.append(f"⚡ {nm(a)} was struck down by lightning from a clear sky")
                 else:
                     out.append(f"💀 {nm(a)} died of {e['cause']}")
                 out.extend(self._pass_on_home(a, nm))
@@ -589,6 +1025,7 @@ class Simulation:
             return []
         chance = self.cfg.convert_chance
         chance *= 2 if self.meta[a].genome.social == "Charismatic" else 1
+        chance *= 0.5 + 0.1 * attr_of(self._stats.get(a, {}), "charisma")  # (average charisma: x1)
         chance *= 0.25 if self.meta[b].genome.social == "Paranoid" else 1
         if self.persona_rng.random() >= chance:
             return []
@@ -622,6 +1059,8 @@ class Simulation:
             if e["type"] == "birth":
                 for p in e["parents"]:
                     action_emoji[p] = emoji
+            elif e["type"] == "conceive":
+                action_emoji[e["npc"]] = action_emoji[e["target"]] = emoji
             elif e["type"] == "build":
                 action_emoji[e["npc"]] = OBJECTS[e["what"]].emoji or emoji
             elif e["type"] == "craft":
@@ -640,21 +1079,30 @@ class Simulation:
                 continue
             m = self.meta[n["id"]]
             nid = n["id"]
-            doing = self.activity.get(nid, "")
-            resting = doing == "sleep" and self.busy_until.get(nid, 0) > tick
+            busy = self.busy_until.get(nid, 0) > tick
+            doing = self.activity.get(nid, "") if busy or nid in self.pending else ""
+            resting = doing == "sleep" and busy
+            work = self.working.get(nid)
             if not n["alive"]:
                 status = "💀"
             elif nid in self.pending:
                 status = "💭"
             elif n["asleep"] or resting or n["energy"] == 0:
                 status = "💤"
+            elif work is not None:  # mid-task: show the tool in hand
+                what = work["act"].get("what")
+                status = ((OBJECTS[what].emoji if what in OBJECTS else ITEMS[what].emoji if what in ITEMS else "")
+                          or EVENT_EMOJI.get(work["act"]["kind"], ""))
             elif n["hunger"] < 25:
                 status = "🤤"
+            elif n["expecting"]:
+                status = "🤰"
             else:
                 status = ""
             npcs.append({
                 **{k: n[k] for k in ("id", "x", "y", "alive", "health", "hunger", "energy", "social",
-                                     "inv", "age", "cause")},
+                                     "inv", "cause", "attrs", "skills", "xp", "role", "caps")},
+                "age": years(n["age"]),
                 "name": m.name, "traits": m.genome.to_dict(), "generation": m.generation,
                 "belief": belief_text(m.persona) if m.persona else "",
                 "voice": voice_text(m.persona) if m.persona else "",
@@ -665,32 +1113,54 @@ class Simulation:
                 # ticks the action started this tick will take (0 = none started); the
                 # front end uses it to animate each NPC at its own speed
                 "dur": self.started.get(nid, 0), "pace": m.pace,
+                # what it is busy with and from which tick to which, for the time bar
+                "doing": doing, "t0": self.busy_from.get(nid, 0) if busy else 0,
+                "t1": self.busy_until.get(nid, 0) if busy else 0,
+                "expecting": round(100 * (1 - n["expecting"] / GESTATION)) if n["expecting"] else 0,
                 "look": m.look, "home": list(self.homes[nid]) if nid in self.homes else None,
                 "stage": "child" if n["age"] < MATURE_AGE else ("elder" if n["age"] >= ELDER_AGE else "adult"),
             })
 
         dialogue = []
         for d in lines.values():
-            if d and d.get("text"):
-                dialogue.append({"npc": d["npc"], "target": d["target"], "text": d["text"], "tick": tick,
-                                 "kind": d["option"], "llm": d.get("llm", False)})
+            if d and (d.get("text") or d.get("player")):
+                if d.get("text"):
+                    dialogue.append({"npc": d["npc"], "target": d["target"], "text": d["text"], "tick": tick,
+                                     "kind": base_option(d["option"]), "llm": d.get("llm", False),
+                                     "player": d.get("player", False),
+                                     "deal": option_text(d["option"]) if ":" in d["option"] else ""})
                 if d.get("reply"):
                     dialogue.append({"npc": d["target"], "target": d["npc"], "text": d["reply"], "tick": tick,
-                                     "kind": "talk", "reply": True, "llm": d.get("reply_llm", False)})
+                                     "kind": "talk", "reply": True, "llm": d.get("reply_llm", False),
+                                     "player": d.get("player_reply", False)})
 
+        for r in self.voice_lines:  # the voice from the sky, and what was said back to it
+            dialogue.append({"npc": -1, "target": r["npc"], "text": r["said"], "tick": tick, "kind": "voice",
+                             "llm": False, "player": True})
+            dialogue.append({"npc": r["npc"], "target": -1, "text": r["reply"], "tick": tick, "kind": "voice",
+                             "reply": True, "llm": r["llm"]})
+        self.voice_lines = []
+        world = getattr(self.engine, "world", None)
         frame = {
             "type": "frame", "tick": tick, "width": self.state["width"], "height": self.state["height"],
-            # "rev" changes whenever a tile does; the server only resends "tiles" when it has
+            # "world" tells one world from the next; "start" is where its founders settled
+            "world": self.epoch, "start": list(world.start) if world is not None else None,
+            # The map, one string per row: "terrain" is the ground, "tiles" what each tile shows
+            # (the object standing on it, or else the ground). "trev" and "rev" change whenever
+            # they do; the server only sends them again when they have.
             "rev": self.state["rev"], "tiles": self.state["tiles"],
+            "trev": self.state["trev"], "terrain": self.state["terrain"],
+            "drops": self.state["drops"],  # things lying on the ground: [x, y, {item: count}]
             "npcs": npcs, "dialogue": dialogue, "log": log_lines,
             # this tick's engine events, so the front end can animate swings, hits, chops...
-            "fx": [e for e in self.state["events"] if e["type"] in FX_EVENTS],
+            "fx": [e for e in self.state["events"] if e["type"] in FX_EVENTS] + self.work_fx,
             "stats": {"population": len(self.alive()), "memories": self.memory.count(),
                       "max_generation": max((m.generation for m in self.meta.values()), default=0),
                       "decisions": dict(self.decision_stats),
                       **self.totals},
             "brain": getattr(self.brain, "name", "?") + (" (paused: slow)" if self.llm_paused(tick) else ""),
             "map": self.cfg.map_name,
+            "possessed": self.possessed, "player": self._player_frame(),
             "memory": getattr(self.memory, "name", "?"),
         }
         self.last_frame = frame

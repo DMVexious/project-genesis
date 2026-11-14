@@ -5,7 +5,7 @@ export const NPC_SCALE = 1.25;
 // (~150 ms; NPC actions span several), so this is ~3.5 s - long enough to read.
 export const BUBBLE_TICKS = 24;
 export const BUBBLE_MIN_MS = 6000;   // ...and never before 6 s, however fast the sim runs
-export const REPLY_DELAY_MS = 1200;  // the listener's answer appears this long after the line
+export const REPLY_DELAY_MS = 2200;  // the listener's answer appears this long after the line
 export const MAX_TALKS = 60;         // exchanges kept in the Conversations feed
 export const GRAVE_TICKS = 400; // graves stay ~1 minute
 export const MAX_GRAVES = 80;

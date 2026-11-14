@@ -1,10 +1,20 @@
-/* The Phaser scene: camera, tiles, NPC sprites, graves, speech bubbles. */
+/* The Phaser scene: camera, NPC sprites, graves, speech bubbles. (The ground
+ * is painted by ground.js and the things standing on it by objects.js.) */
 import { AGGRO_COLOR, BUBBLE_MIN_MS, BUBBLE_TICKS, GRAVE_TICKS, MAX_GRAVES, NPC_SCALE, REPLY_DELAY_MS, TILE,
          overlay, params } from "./config.js";
+import { clearCull, cull } from "./cull.js";
+import { clearDrops, renderDrops } from "./drops.js";
 import { anim, newFx, playFx, poseSprite } from "./fx.js";
+import { animateGround, buildGround, clearGround } from "./ground.js";
+import { terrainAt } from "./land.js";
+import { menuOpen } from "./menu.js";
+import { drawMinimap } from "./minimap.js";
+import { clearObjects, flickerFires, renderObjects } from "./objects.js";
 import { select } from "./panel.js";
+import { groundClick, openInteract, playing } from "./play.js";
+import { playFrame } from "./sound.js";
 import { state } from "./state.js";
-import { makeTextures, npcTexture, texFor } from "./textures.js";
+import { NPC_H, NPC_W, makeTextures, npcTexture } from "./textures.js";
 
 // --- Phaser scene -----------------------------------------------------------
 export class WorldScene extends Phaser.Scene {
@@ -13,9 +23,9 @@ export class WorldScene extends Phaser.Scene {
     makeTextures(this);
     this.ring = this.add.image(0, 0, "ring").setDepth(9000).setVisible(false);
     this.homeMark = this.add.image(0, 0, "homemark").setOrigin(0).setTint(0x9fd3ff).setDepth(8999).setVisible(false);
-    this.flicker = 0;
+    this.flicker = this.mapped = 0;
     const cam = this.cameras.main;
-    cam.setZoom(Phaser.Math.Clamp(Number(params.get("zoom")) || 1, 0.4, 4));  // ?zoom=2.5
+    cam.setZoom(Phaser.Math.Clamp(Number(params.get("zoom")) || START_ZOOM, MIN_ZOOM, MAX_ZOOM));  // ?zoom=2.5
 
     // Drag to pan (a short press without movement counts as a click).
     let drag = null;
@@ -30,8 +40,23 @@ export class WorldScene extends Phaser.Scene {
         cam.scrollY -= dy / cam.zoom;
       }
     });
-    this.input.on("gameobjectup", (_p, obj) => { if (drag && !drag.moved && obj.npcId) select(obj.npcId); });
-    this.input.on("pointerup", () => { setTimeout(() => { drag = null; }, 0); });
+    // A click on a villager: select them (or, while playing someone, open what you
+    // can do with them). A click on the ground: while playing, walk there.
+    this.input.on("gameobjectup", (p, obj) => {
+      if (!drag || drag.moved || !obj.npcId) return;
+      if (playing() && obj.npcId !== state.possessed) {
+        const c = this.game.canvas.getBoundingClientRect(), s = document.getElementById("stage").getBoundingClientRect();
+        openInteract(obj.npcId, p.x * (c.width / this.scale.width) + c.left - s.left,
+                     p.y * (c.height / this.scale.height) + c.top - s.top);
+      } else select(obj.npcId);
+    });
+    this.input.on("pointerup", (p, over) => {
+      if (drag && !drag.moved && !(over && over.length) && p.button === 0) {
+        const at = cam.getWorldPoint(p.x, p.y);
+        groundClick(this, at.x, at.y);
+      }
+      setTimeout(() => { drag = null; }, 0);
+    });
 
     // Scroll to zoom toward the cursor.
     this.input.on("wheel", (p, _objs, _dx, dy) => {
@@ -48,14 +73,19 @@ export class WorldScene extends Phaser.Scene {
     if (state.frame) render(state.frame);
   }
   update(t, dt) {
-    // campfires flicker
-    if (t - this.flicker > 220) {
+    if (t - this.flicker > 110) {  // campfires flicker
       this.flicker = t;
-      const frame = Math.floor(t / 220) % 2 ? "fire1" : "fire0";
-      for (const img of state.fires) img.setTexture(frame);
+      flickerFires(t);
+    }
+    animateGround(t);
+    cull(this);
+    if (t - this.mapped > 120) {  // (the minimap's view box follows the camera between ticks)
+      this.mapped = t;
+      drawMinimap();
     }
     const k = this.keys, cam = this.cameras.main;
-    if (document.activeElement && document.activeElement.tagName === "INPUT") return placeOverlays(this);
+    const typing = document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName);
+    if (typing || menuOpen() || playing()) return placeOverlays(this);  // (while playing, the keys walk)
     const v = (0.6 * dt) / cam.zoom;
     const dx = (k.D.isDown || k.RIGHT.isDown) - (k.A.isDown || k.LEFT.isDown);
     const dy = (k.S.isDown || k.DOWN.isDown) - (k.W.isDown || k.UP.isDown);
@@ -64,7 +94,7 @@ export class WorldScene extends Phaser.Scene {
   }
 }
 
-export const MIN_ZOOM = 0.4, MAX_ZOOM = 4;
+export const MIN_ZOOM = 0.25, MAX_ZOOM = 4, START_ZOOM = 1.5;
 export const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game",
@@ -76,42 +106,29 @@ export const game = new Phaser.Game({
 export const scene = () => game.scene.getScene("world");
 
 // --- rendering -----------------------------------------------------------------
-export function renderTiles(sc, f) {
-  const fires = [];
-  if (state.tiles.length !== f.height || (state.tiles[0] || []).length !== f.width) {
-    state.tiles.flat().forEach((img) => img.destroy());
-    state.tiles = f.tiles.map((row, y) => [...row].map((ch, x) => {
-      const img = sc.add.image(x * TILE, y * TILE, texFor(ch, x, y)).setOrigin(0).setData("ch", ch);
-      if (ch === "C") fires.push(img);
-      return img;
-    }));
-    state.fires = fires;
-    // New world: let the camera roam it, starting over the settlers.
-    const cam = sc.cameras.main;
-    cam.setBounds(0, 0, f.width * TILE, f.height * TILE);
-    const alive = f.npcs.filter((n) => n.alive);
-    const center = (params.get("center") || "").split(",").map(Number);  // ?center=<tileX>,<tileY>
-    if (center.length === 2 && center.every(Number.isFinite)) {
-      cam.centerOn(center[0] * TILE, center[1] * TILE);
-    } else if (alive.length) {
-      const cx = alive.reduce((a, n) => a + n.x, 0) / alive.length;
-      const cy = alive.reduce((a, n) => a + n.y, 0) / alive.length;
-      cam.centerOn(cx * TILE, cy * TILE);
-    }
-    return;
+// A different world from the one on show (or the first): start afresh, let the
+// camera roam all of it, and look at where its founders are.
+function syncWorld(sc, f) {
+  const key = `${f.world}:${f.width}x${f.height}`;
+  if (state.worldKey === key) return;
+  state.worldKey = key;
+  clearObjects();
+  clearGround(sc);
+  clearCull();
+  const cam = sc.cameras.main;
+  cam.stopFollow();
+  cam.setBounds(0, 0, f.width * TILE, f.height * TILE);
+  const center = (params.get("center") || "").split(",").map(Number);  // ?center=<tileX>,<tileY>
+  const alive = f.npcs.filter((n) => n.alive);
+  if (center.length === 2 && center.every(Number.isFinite)) {
+    cam.centerOn(center[0] * TILE, center[1] * TILE);
+  } else if (alive.length) {
+    const cx = alive.reduce((a, n) => a + n.x, 0) / alive.length;
+    const cy = alive.reduce((a, n) => a + n.y, 0) / alive.length;
+    cam.centerOn((cx + 0.5) * TILE, (cy + 0.5) * TILE);
+  } else if (f.start) {
+    cam.centerOn(f.start[0] * TILE, f.start[1] * TILE);
   }
-  f.tiles.forEach((row, y) => {
-    for (let x = 0; x < row.length; x++) {
-      const img = state.tiles[y][x];
-      const ch = row[x];
-      if (img.getData("ch") !== ch) {
-        img.setTexture(texFor(ch, x, y)).setData("ch", ch);
-        sc.tweens.add({ targets: img, alpha: { from: 0.4, to: 1 }, duration: 250 });
-      }
-      if (ch === "C") fires.push(img);
-    }
-  });
-  state.fires = fires;
 }
 
 export function npcPos(n) {
@@ -119,7 +136,7 @@ export function npcPos(n) {
   return { x: n.x * TILE + TILE / 2 + jitter, y: n.y * TILE + TILE - 2 };
 }
 
-export const stageOf = (n) => n.stage || (n.age < 60 ? "child" : "adult");
+export const stageOf = (n) => n.stage || (n.age < 16 ? "child" : "adult");
 export const scaleFor = (stage) => (stage === "child" ? NPC_SCALE * 0.7 : NPC_SCALE);
 
 export function addGrave(sc, n, tick, instant = false) {
@@ -138,6 +155,27 @@ export function ageGraves(sc, tick) {
   });
 }
 
+// The time bar over a villager who is busy with something that takes a while.
+// It fills smoothly: each tick it is told where it should be by the next one.
+const BAR_KINDS = new Set(["chop", "forage", "build", "craft", "eat", "sleep", "mate"]);
+function updateWorkBar(s, n, tick, opts) {
+  const el = s.workEl, fill = el.firstChild;
+  const show = n.alive && BAR_KINDS.has(n.doing) && n.t1 > n.t0 && tick < n.t1;
+  if (el.hidden === show) el.hidden = !show;
+  if (!show) { s.workT0 = -1; return; }
+  const span = n.t1 - n.t0;
+  const live = !opts.snap && !opts.reverse && !state.paused;
+  if (s.workT0 !== n.t0 || s.workKind !== n.doing) {  // a new job: start from wherever it stands now
+    s.workT0 = n.t0; s.workKind = n.doing;
+    el.dataset.kind = n.doing;
+    fill.style.transition = "none";
+    fill.style.width = `${Math.max(0, Math.min(100, (100 * (tick - n.t0)) / span))}%`;
+    void fill.offsetWidth;  // apply it before the transition below starts
+  }
+  fill.style.transition = live ? `width ${opts.tickMs || state.tickMs}ms linear` : "none";
+  fill.style.width = `${Math.max(0, Math.min(100, (100 * (tick + (live ? 1 : 0) - n.t0)) / span))}%`;
+}
+
 export function renderNpcs(sc, f, opts = {}) {
   const seen = new Set();
   for (const n of f.npcs) {
@@ -150,15 +188,18 @@ export function renderNpcs(sc, f, opts = {}) {
     const key = npcTexture(sc, n.look, stage);
     if (!s) {
       const sprite = sc.add.image(p.x, p.y, key).setOrigin(0.5, 1).setInteractive({ useHandCursor: true });
+      sprite.setDepth(p.y);
       sprite.npcId = n.id;
       sprite.setScale(scaleFor(stage));
       const shadow = sc.add.image(p.x, p.y, "shadow").setTint(AGGRO_COLOR[n.traits.aggression] || 0xffffff).setAlpha(0.75);
       const spear = sc.add.image(p.x, p.y, "spear").setOrigin(0.5, 1).setAngle(16).setVisible(false);
       const tag = document.createElement("div");
       tag.className = "npc-tag";
-      tag.innerHTML = '<span class="status"></span><span class="action"></span>';
+      tag.innerHTML = '<div class="icons"><span class="status"></span><span class="action"></span></div>' +
+                      '<div class="work" hidden><i></i></div>';
       overlay.appendChild(tag);
-      s = { sprite, shadow, spear, tag, statusEl: tag.children[0], actionEl: tag.children[1], dying: false, key,
+      s = { sprite, shadow, spear, tag, statusEl: tag.querySelector(".status"), actionEl: tag.querySelector(".action"),
+            workEl: tag.querySelector(".work"), workT0: -1, dying: false, key, wading: false,
             pos: { x: p.x, y: p.y },  // where the NPC stands (tweened while walking)
             fx: newFx(),              // animation offsets layered on top (see anim section)
             base: scaleFor(stage), face: 1, phase: (n.id * 1.7) % (Math.PI * 2), nextZ: 0 };
@@ -184,15 +225,23 @@ export function renderNpcs(sc, f, opts = {}) {
     }
     s.sleeping = n.alive && n.status === "💤";
     s.tx = p.x; s.ty = p.y;
+    const ground = terrainAt(f, n.x, n.y);
+    const wading = !!ground && ground.key === "shallow";  // knee-deep in water: no feet, no shadow
+    if (wading !== s.wading) {
+      s.wading = wading;
+      if (wading) s.sprite.setCrop(0, 0, NPC_W, NPC_H - 7); else s.sprite.setCrop();
+      s.shadow.setVisible(!wading);
+    }
     s.sprite.setDepth(p.y);
     s.spear.setVisible(!!(n.inv && n.inv.spear) && n.alive);
     s.statusEl.textContent = n.status;
+    updateWorkBar(s, n, f.tick, opts);
     // Re-trigger the pop animation whenever an action emoji is shown.
     s.actionEl.textContent = "";
     if (n.emoji) {
       const el = s.actionEl.cloneNode();
       el.textContent = n.emoji;
-      s.tag.replaceChild(el, s.actionEl);
+      s.actionEl.replaceWith(el);
       s.actionEl = el;
     }
     if (!n.alive && !s.dying) {
@@ -227,7 +276,7 @@ export function showBubble(d, tick) {
   const old = state.bubbles.get(d.npc);
   if (old) old.el.remove();
   const el = document.createElement("div");
-  el.className = `bubble ${d.kind || ""}`;
+  el.className = `bubble ${d.kind || ""} ${d.player ? "player" : ""}`;
   el.textContent = d.text;  // the server already caps lines at MAX_WORDS
   overlay.appendChild(el);
   state.bubbles.set(d.npc, { el, tick, born: performance.now() });
@@ -237,6 +286,7 @@ export function renderBubbles(f) {
   for (const d of f.dialogue) {
     // the answer pops up a beat after the line it answers, so it reads as an exchange
     if (d.reply) setTimeout(() => { if (state.sprites.has(d.npc)) showBubble(d, state.frame.tick); }, REPLY_DELAY_MS);
+    else if (d.npc === -1) showBubble({ ...d, npc: d.target, kind: "sky" }, f.tick);  // the voice from the sky, over its listener
     else showBubble(d, f.tick);
   }
   const now = performance.now();
@@ -296,17 +346,22 @@ export function placeOverlays(sc) {
 // backwards (no effects, speech or deaths); tickMs = how long each frame is shown.
 export function render(f, opts = {}) {
   const sc = scene();
-  if (!sc || !sc.sys.isActive() || !sc.ring) return;
-  renderTiles(sc, f);
+  if (!sc || !sc.sys.isActive() || !sc.ring || !f.terrain || !state.defs) return;
+  syncWorld(sc, f);
+  buildGround(sc, f);
+  renderObjects(sc, f, opts);
   if (opts.reverse) {
     state.graves = state.graves.filter((gr) => gr.tick <= f.tick || (gr.img.destroy(), false));
     clearBubbles();
   }
   renderNpcs(sc, f, opts);
+  renderDrops(sc, f, opts);
   if (!opts.reverse && !opts.snap) {
     playFx(sc, f.fx || []);
+    playFrame(f);
     renderBubbles(f);
   }
+  drawMinimap();
 }
 
 export function clearBubbles() {
@@ -318,6 +373,7 @@ export function clearBubbles() {
 export function clearWorld() {
   for (const id of [...state.sprites.keys()]) removeNpc(id);
   clearBubbles();
+  clearDrops();
   for (const gr of state.graves) gr.img.destroy();
   state.graves = [];
 }

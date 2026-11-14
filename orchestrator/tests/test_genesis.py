@@ -160,6 +160,181 @@ class EngineTests(unittest.TestCase):
         e.apply([{"op": "clear", "x": x, "y": y}])
         self.assertIsNone(w.obj_at(x, y))
 
+    def test_trees_drop_their_wood(self):
+        e = Engine()
+        e.init(3, 14, 14, 2)
+        w = e.world
+        a, b = w.npcs
+        w.teleport(b, 0, 0) if w.passable(0, 0) else None
+        tx, ty = next((x, y) for y in range(1, w.h - 1) for x in range(1, w.w - 1)
+                      if w.free(x, y) and w.free(x + 1, y))
+        w.place("tree", tx, ty)
+        w.teleport(a, tx + 1, ty)
+        w.generate_all_actions()
+        chop = next(i for i, x in enumerate(w.actions[a.id]) if x["kind"] == "chop")
+        s = e.step({a.id: (chop, 0)})
+        # the wood is on the ground where the tree stood, not in anyone's hands
+        self.assertEqual(a.have("wood"), 0)
+        self.assertEqual(s["drops"], [[tx, ty, {"wood": 4}]])
+        self.assertEqual([ev["type"] for ev in s["events"]], ["drop", "chop"])
+        collect = next(x for x in w.actions[a.id] if x["kind"] == "collect")
+        self.assertEqual((collect["x"], collect["y"], collect["dist"], collect["items"]), (tx, ty, 1, {"wood": 4}))
+        s = e.step({a.id: (w.actions[a.id].index(collect), 0)})  # walking onto it picks it up
+        self.assertEqual(((a.x, a.y), a.have("wood"), s["drops"]), ((tx, ty), 4, []))
+        ev = next(ev for ev in s["events"] if ev["type"] == "pickup")
+        self.assertEqual((ev["npc"], ev["items"], ev["owner"]), (a.id, {"wood": 4}, a.id))
+        # nothing grows back while someone (or something) is on the stump
+        self.assertFalse(w.obj_at(tx, ty).ripe)
+
+    def test_hands_are_only_so_big(self):
+        e = Engine()
+        e.init(3, 14, 14, 1)
+        w = e.world
+        n = w.npcs[0]
+        cap = n.cap("wood")  # (how much fits depends on how strong they are)
+        n.give("wood", cap - 1)
+        w.drop(n.x, n.y, {"wood": 5, "food": 2})
+        w.generate_all_actions()
+        here = next(x for x in w.actions[n.id] if x["kind"] == "collect")
+        self.assertEqual(here["dist"], 0)
+        s = e.step({n.id: (w.actions[n.id].index(here), 0)})
+        self.assertEqual((n.have("wood"), n.have("food")), (cap, 2))
+        self.assertEqual(s["drops"], [[n.x, n.y, {"wood": 4}]])  # the rest stays put
+        self.assertFalse(any(x["kind"] == "collect" for x in w.actions[n.id]))  # no room: not worth offering
+        for _ in range(D.DROP_TTL):
+            w.world_time(1)
+            n.hunger = n.energy = 100
+        self.assertEqual(w.drops, {})  # left long enough, it rots away
+
+    def test_the_dead_drop_what_they_carried(self):
+        e = Engine()
+        e.init(5, 16, 12, 2)
+        w = e.world
+        a, b = w.npcs
+        b.give("wood", 7)
+        b.give("spear", 1)
+        s = e.apply([{"op": "kill", "npc": b.id}])
+        self.assertEqual(s["drops"], [[b.x, b.y, {"wood": 7, "spear": 1}]])
+        self.assertEqual(b.inv, {})
+
+    def test_anything_can_be_traded_or_given(self):
+        e = Engine()
+        e.init(5, 16, 12, 2)
+        w = e.world
+        a, b = w.npcs
+        w.teleport(b, a.x, a.y)
+        a.give("wood", 6)
+        b.give("food", 1)
+        b.give("spear", 1)
+        opts = A.interact_options(w, a, b)
+        self.assertEqual(opts, ["talk", "fight", "trade:wood:food", "trade:wood:spear", "give:wood"])
+        self.assertIn("trade:food:wood", A.interact_options(w, b, a))
+        w.generate_all_actions()
+        act = next(i for i, x in enumerate(w.actions[a.id]) if x["kind"] == "interact")
+        s = e.step({a.id: (act, opts.index("trade:wood:spear"))})
+        self.assertEqual(s["events"][0], {"type": "trade", "npc": a.id, "target": b.id, "gave": "wood",
+                                          "gave_n": 6, "got": "spear", "got_n": 1})
+        self.assertEqual((a.inv, b.inv), ({"spear": 1}, {"food": 1, "wood": 6}))
+        opts = A.interact_options(w, b, a)
+        self.assertNotIn("trade:spear:wood", opts)  # b has no spear to offer any more...
+        self.assertIn("trade:wood:spear", opts)     # ...but could buy it back
+        self.assertIn("give:food", opts)
+        act = next(i for i, x in enumerate(w.actions[b.id]) if x["kind"] == "interact")
+        s = e.step({b.id: (act, opts.index("give:food"))})
+        self.assertEqual(s["events"][0], {"type": "gift", "npc": b.id, "target": a.id, "item": "food", "n": 1})
+        self.assertEqual((a.have("food"), b.have("food")), (1, 0))
+        self.assertIn("give you 1 food", D.option_text("give:food", mine=False))
+        self.assertIn("give them 2 wood, get 1 food", D.option_text("trade:wood:food"))
+
+    def test_the_hungry_get_fed_and_takers_are_remembered(self):
+        async def go():
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=2))
+            return sim
+        sim = asyncio.run(go())
+        a, b = (n["id"] for n in sim.state["npcs"])
+        rich = NpcView(a, "Ash", Genome("Pacifist", "Lazy", "Loner"), {**sim.state["npcs"][0], "inv": {"food": 6}})
+        poor = NpcView(b, "Bo", Genome("Neutral", "Lazy", "Loner"), {**sim.state["npcs"][1], "hunger": 20, "inv": {}})
+        brain = HeuristicBrain(3)
+        ix = Interaction(rich, poor, ["talk", "fight", "give:food"], [], 0)
+        self.assertGreater(brain.option_weight(ix, "give:food"), brain.option_weight(ix, "talk") + 15)
+        full = Interaction(rich, dataclasses.replace(poor, stats={**poor.stats, "hunger": 90}), ix.options, [], 0)
+        self.assertLess(brain.option_weight(full, "give:food"), 0)  # no handouts to the well fed
+        # the hungry will not sell their last food
+        self.assertFalse(asyncio.run(brain.consent(Interaction(poor, rich, [], [], 0), "trade:wood:food", "")))
+        lines = sim._process_events(
+            [{"type": "pickup", "npc": a, "x": 1, "y": 1, "items": {"wood": 4}, "owner": b},
+             {"type": "gift", "npc": a, "target": b, "item": "food", "n": 1},
+             {"type": "trade", "npc": a, "target": b, "gave": "wood", "gave_n": 2, "got": "food", "got_n": 1}], {}, 5)
+        self.assertEqual(len(lines), 3)
+        self.assertIn("4 wood", lines[0])
+        self.assertEqual(sim.memory.grudge(b, a), -2 + 3 + 2)  # robbed, then given to, then a fair trade
+
+    def test_practice_makes_better_for_life(self):
+        e = Engine()
+        e.init(3, 14, 14, 1)
+        w = e.world
+        n = w.npcs[0]
+        n.attrs = {k: 5 for k in D.ATTRS}
+        tx, ty = next((x, y) for y in range(1, w.h - 1) for x in range(1, w.w - 1)
+                      if w.free(x, y) and w.free(x + 1, y))
+        w.teleport(n, tx + 1, ty)
+        levels, wood = [], []
+        for _ in range(80):  # fell the same spot over and over
+            w.place("tree", tx, ty)
+            w.drops.clear()
+            n.inv.clear()
+            n.energy = n.hunger = 100
+            w.generate_all_actions()
+            s = e.step({n.id: (next(i for i, x in enumerate(w.actions[n.id]) if x["kind"] == "chop"), 0)})
+            levels += [(ev["skill"], ev["level"]) for ev in s["events"] if ev["type"] == "levelup"]
+            wood.append(s["drops"][0][2]["wood"])
+        self.assertEqual(levels[:3], [("woodcutting", 1), ("woodcutting", 2), ("woodcutting", 3)])
+        self.assertGreaterEqual(n.level("woodcutting"), 6)
+        self.assertEqual((wood[0], wood[-1]), (4, 4 + n.level("woodcutting") // 3))  # more wood per tree
+        self.assertGreater(n.attrs["strength"], 5)  # and the work built them up
+        me = n.to_json()
+        self.assertEqual(me["role"], "woodcutting")
+        self.assertEqual(me["xp"]["woodcutting"][1], D.skill_need(n.level("woodcutting")))
+        # the practised are quicker at it, the strong carry more
+        novice = {"attrs": {k: 5 for k in D.ATTRS}, "skills": {}}
+        self.assertLess(D.speed_factor(me, {"kind": "chop"}), 0.75 * D.speed_factor(novice, {"kind": "chop"}))
+        self.assertAlmostEqual(D.speed_factor(novice, {"kind": "chop"}), 1.0)
+        self.assertGreater(n.cap("wood"), D.ITEMS["wood"].cap)
+        self.assertEqual(n.cap("spear"), 1)
+
+    def test_attributes_shape_a_fight_and_are_inherited(self):
+        w = World(4, 16, 12, 2)
+        a, b = w.npcs
+        for n in (a, b):
+            self.assertTrue(all(3 <= v <= 7 for v in n.attrs.values()), n.attrs)
+        a.attrs.update(strength=9, agility=5)
+        b.attrs.update(strength=2, agility=9)
+        a.skills["combat"] = 6
+        self.assertEqual(A.hit_chance(a, b), 75 + 12 - 8)
+        self.assertGreater(A._hit_bonus(a), A._hit_bonus(b) + 8)
+        kid = w.blend_attrs(a, b)
+        for k in D.ATTRS:
+            lo, hi = sorted((a.attrs[k], b.attrs[k]))
+            self.assertTrue(lo - 1 <= kid[k] <= min(hi + 1, D.ATTR_MAX - 2), (k, kid[k]))
+
+    def test_lives_are_counted_in_years(self):
+        self.assertEqual((D.years(D.MATURE_AGE), D.years(D.ELDER_AGE)), (16, 60))
+        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7))
+        frame = sim._frame({}, [])
+        for n in frame["npcs"]:
+            self.assertTrue(18 <= n["age"] <= 26, n["age"])
+            self.assertEqual(n["stage"], "adult")
+            self.assertEqual(set(n["attrs"]), set(D.ATTRS))
+        # the LLM is told what it is made of and good at
+        v = sim.view(sim.alive()[0])
+        v.stats["skills"] = {"woodcutting": 3}
+        you = json.loads(action_prompt(v, sim.names())[1]["content"].split("\n")[0])["you"]
+        self.assertEqual(you["skill_levels"], {"woodcutting": 3})
+        self.assertIn("woodcutter", you["known_as"])
+        self.assertEqual(set(you["attributes_1_to_10"]), {a.label.lower() for a in D.ATTRS.values()})
+        lines = sim._process_events([{"type": "levelup", "npc": v.id, "skill": "woodcutting", "level": 3}], {}, 9)
+        self.assertIn("level 3", lines[0])
+
     def test_registries_are_complete(self):
         # every declared action is offered, executed, scored and described; every tile has a glyph
         from genesis.brain import SCORERS
@@ -256,7 +431,12 @@ class BrainTests(unittest.TestCase):
         me = NpcView(a["id"], "Ash", Genome("Neutral", "Lazy", "Loner"), a, [], persona={"belief": 3, "voice": 1})
         them = NpcView(b["id"], "Bo", Genome("Pacifist", "Lazy", "Loner"), b, [], persona={"belief": 5, "voice": 2})
         ix = Interaction(me, them, ["talk"], [], 0, ["Kora died of starvation"])
+        from genesis.brain import gossips, spoken
+        a["age"] = next(age for age in range(100, 200, 20) if gossips(
+            Interaction(NpcView(a["id"], "Ash", me.genome, {**a, "age": age}, []), them, [], [], 0)))
         sys_msg, user = (m["content"] for m in interaction_prompt(ix))
+        self.assertEqual(spoken('I\'m just fine."} }{'), "I'm just fine.")
+        self.assertIn("casual", sys_msg)
         self.assertIn(BELIEFS[3][0], sys_msg)
         self.assertIn(VOICES[1], sys_msg)
         self.assertNotIn(f'"{BELIEFS[3][1]}"', sys_msg)  # never shown its own catchphrase
@@ -287,7 +467,7 @@ class BreedingTests(unittest.TestCase):
         w = World(1, 16, 12, 2)
         a, b = w.npcs[:2]
         for n in (a, b):
-            n.age, n.social, n.hunger, n.health = 200, 100, 100, 100
+            n.age, n.social, n.hunger, n.health = D.START_AGE, 100, 100, 100
         w.teleport(b, a.x, a.y)
         self.assertTrue(A.mate_ok(w, a, b))
         self.assertEqual(A.interact_options(w, a, b), ["talk", "fight", "mate"])
@@ -298,7 +478,7 @@ class BreedingTests(unittest.TestCase):
 class SimTests(unittest.TestCase):
     def test_sim_runs_and_logs_memories(self):
         async def go():
-            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7))
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=16))
             frames = [await sim.tick() for _ in range(300)]
             return sim, frames
         sim, frames = asyncio.run(go())
@@ -325,7 +505,7 @@ class SimTests(unittest.TestCase):
 
     def test_conversations_get_replies_and_spread_beliefs(self):
         async def go():
-            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, convert_chance=1.0))
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=16, convert_chance=1.0))
             frames = [await sim.tick() for _ in range(300)]
             return sim, frames
         sim, frames = asyncio.run(go())
@@ -363,7 +543,10 @@ class SimTests(unittest.TestCase):
 
         async def go():
             brain = FakeLLM()
-            sim = Simulation(Engine(), brain, SimpleMemory(), SimConfig(seed=7, llm_interval=6))
+            # (no waiting for a turn to speak here: this is about which decisions reach the LLM,
+            # and a crowd queueing to talk would let many of its answers go stale)
+            sim = Simulation(Engine(), brain, SimpleMemory(), SimConfig(
+                seed=7, population=16, llm_interval=6, talk_gap=0, talk_cooldown=0, talk_budget=99))
             for _ in range(120):
                 await sim.tick()
             return sim, brain
@@ -436,7 +619,7 @@ class SimTests(unittest.TestCase):
         self.assertGreater(len({m.pace for m in sim.meta.values()}), 3)
 
     def test_homes_pass_to_children(self):
-        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7))
+        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=16))
         parent, child, other = (n["id"] for n in sim.state["npcs"][:3])
         sim.meta[child].parents = [parent, other]
         sim.homes[parent] = (4, 4)
@@ -448,16 +631,85 @@ class SimTests(unittest.TestCase):
         self.assertEqual(me["home"], [4, 4])
         self.assertEqual(set(me["look"]), {"skin", "hair", "hairstyle", "clothes", "color", "hat"})
 
+    def test_work_takes_time(self):
+        # chopping, building, eating... only take effect once the time bar has run out
+        async def go():
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=16))
+            seen = []
+            for _ in range(400):
+                f = await sim.tick()
+                done = {e["npc"]: e["type"] for e in f["fx"] if e["type"] in ("chop", "forage", "build", "eat", "craft")}
+                seen.append((f["tick"], {n["id"]: (n["doing"], n["t0"], n["t1"]) for n in f["npcs"]}, done,
+                             [e for e in f["fx"] if e["type"] == "work"]))
+            return seen
+        seen = asyncio.run(go())
+        finished = swings = 0
+        for i, (tick, npcs, done, work) in enumerate(seen):
+            swings += len(work)
+            for nid, kind in done.items():
+                # the tick before it happened, that NPC was still busy doing exactly this
+                doing, t0, t1 = seen[i - 1][1][nid]
+                self.assertEqual(doing, kind)
+                self.assertEqual(t1, tick)
+                self.assertGreaterEqual(t1 - t0, 2)
+                finished += 1
+        self.assertGreater(finished, 20)
+        self.assertGreater(swings, finished)  # several swings per finished job
+
+    def test_children_are_carried_before_they_are_born(self):
+        e = Engine()
+        e.init(1, 16, 12, 2)
+        w = e.world
+        a, b = w.npcs
+        for n in (a, b):
+            n.age, n.social, n.hunger, n.health, n.energy = D.START_AGE, 100, 100, 100, 100
+        w.teleport(b, a.x, a.y)
+        w.generate_all_actions()
+        act = next(i for i, x in enumerate(w.actions[a.id]) if x["kind"] == "interact")
+        s = e.step({a.id: (act, w.actions[a.id][act]["options"].index("mate"))})
+        self.assertEqual([ev["type"] for ev in s["events"]], ["conceive"])
+        self.assertEqual((len(w.npcs), a.expecting), (2, D.GESTATION - 1))  # (a unit of world time passed)
+        self.assertFalse(A.mate_ok(w, a, b))
+        for _ in range(D.GESTATION - 2):
+            for n in (a, b):
+                n.hunger = n.energy = 100
+            self.assertEqual(e.step({})["events"], [])
+        born = e.step({})["events"]
+        self.assertEqual(born, [{"type": "birth", "npc": 3, "parents": [a.id, b.id]}])
+        self.assertEqual((len(w.npcs), a.expecting, w.npcs[-1].age), (3, 0, 0))
+
+    def test_founders_start_together(self):
+        for seed in range(8):
+            w = World(seed, 80, 56, 3)
+            xs, ys = [n.x for n in w.npcs], [n.y for n in w.npcs]
+            self.assertLessEqual(max(xs) - min(xs), 2 * D.SETTLE_RADIUS + 2, seed)
+            self.assertLessEqual(max(ys) - min(ys), 2 * D.SETTLE_RADIUS + 2, seed)
+            self.assertEqual(len({(n.x, n.y) for n in w.npcs}), 3)
+
+    def test_people_take_turns_talking(self):
+        async def go():
+            cfg = SimConfig(seed=7, population=16)
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), cfg)
+            starts = []
+            for _ in range(600):
+                f = await sim.tick()
+                starts += [f["tick"]] * sum(1 for d in f["dialogue"] if not d.get("reply"))
+            return cfg, starts
+        cfg, starts = asyncio.run(go())
+        self.assertGreater(len(starts), 5)
+        gaps = [b - a for a, b in zip(starts, starts[1:])]
+        self.assertGreaterEqual(min(gaps), cfg.talk_gap)  # never two conversations at once
+
     def test_same_seed_same_story(self):
         async def run():
-            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=11, width=40, height=30))
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=11, width=40, height=30, population=12))
             return [await sim.tick() for _ in range(500)]
         a, b = asyncio.run(run()), asyncio.run(run())
         self.assertEqual(a, b)
 
     def test_player_commands_take_effect_next_tick(self):
         async def go():
-            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7))
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=16))
             first = sim.alive()[0]
             sim.enqueue({"op": "spawn", "x": first["x"], "y": first["y"]})
             sim.enqueue({"op": "give", "npc": first["id"], "item": "food", "n": 9})
@@ -487,7 +739,7 @@ class SimTests(unittest.TestCase):
     def test_terminal_draws_every_tile(self):
         # (the old glyph table had no farms or campfires and crashed the live view)
         from genesis.terminal import render
-        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, width=20, height=12))
+        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, width=20, height=12, population=6))
         w = sim.engine.world
         spots = [(x, y) for y in range(w.h) for x in range(w.w) if w.free(x, y)]
         for i, o in enumerate(D.OBJECTS.values()):
@@ -508,6 +760,388 @@ class SimTests(unittest.TestCase):
         self.assertEqual(m.grudge(1, 2), -2)
         self.assertEqual([x.tick for x in m.recall(1, 2)], [5, 9])
         self.assertEqual(m.recall(2, 1), [])
+
+
+def slow_scan(world, sx, sy, limit):
+    """What ``path.scan`` should find, worked out the slow, obvious way: walking
+    distance to every tile, then the nearest tile next to each kind of place."""
+    w, h = world.w, world.h
+    dist = {(sx, sy): 0}
+    frontier = [(sx, sy)]
+    while frontier:
+        nxt = []
+        for x, y in frontier:
+            for dx, dy in D.DIRS:
+                p = (x + dx, y + dy)
+                if p not in dist and world.passable(*p) and dist[(x, y)] < limit:
+                    dist[p] = dist[(x, y)] + 1
+                    nxt.append(p)
+        frontier = nxt
+    best = {}
+    for (x, y), d in dist.items():
+        for dx, dy in D.DIRS:
+            if world.inb(x + dx, y + dy):
+                g = world.tile(x + dx, y + dy)
+                if g in D.GOTO_BIT and d < best.get(g, 10**9):
+                    best[g] = d
+    return dist, best
+
+
+class MapTests(unittest.TestCase):
+    def test_one_flood_agrees_with_the_slow_way(self):
+        from genesis.engine.path import scan
+        for name in ("barren", "valley", "forest", "islands", "desert"):
+            world = World(5, 48, 36, 8, 1, name)
+            world.drop(*next((x, y) for y in range(world.h) for x in range(world.w) if world.free(x, y)),
+                       {"wood": 2})
+            for n in world.npcs:
+                others = [o for o in world.npcs if o.id != n.id][:3]
+                found = scan(world, n.x, n.y, D.GOTO_BIT, others, D.GOTO_LIMIT, list(world.drops))
+                dist, best = slow_scan(world, n.x, n.y, D.GOTO_LIMIT)
+                self.assertEqual({g: found[g][0] for g in found if g in D.GOTO_BIT}, best, name)
+                for o in others:  # the nearest tile within arm's reach of each of them
+                    near = min((d for (x, y), d in dist.items() if abs(x - o.x) <= 1 and abs(y - o.y) <= 1),
+                               default=None)
+                    self.assertEqual(found.get(o.id, (None,))[0], near, name)
+                pile = min((dist[(i % world.w, i // world.w)] for i in world.drops
+                            if (i % world.w, i // world.w) in dist), default=None)
+                self.assertEqual(found.get("cell", (None,))[0], pile, name)
+                for key, hit in found.items():  # and the first step really is a step that way
+                    d, dx, dy = hit[:3]
+                    if d:
+                        self.assertEqual(dist[(n.x + dx, n.y + dy)], 1, (name, key))
+                    else:
+                        self.assertEqual((dx, dy), (0, 0))
+
+    def test_the_search_index_keeps_up_with_the_world(self):
+        # every tile's "what am I next to" mask must match the tiles around it, whatever happens
+        e, rng = Engine(), random.Random(9)
+        s = e.init(4, 30, 22, 10, 1, "valley")
+        w = e.world
+
+        def check():
+            for i in range(w.w * w.h):
+                self.assertEqual(w.near[i], w._near_of(i), i)
+            for g in D.GOTO_BIT:
+                self.assertEqual(w.where[g], {i for i, c in enumerate(w.glyphs) if c == g}, g)
+                self.assertEqual(w.count[g], len(w.where[g]), g)
+            self.assertEqual(s["tiles"], ["".join(w.glyphs[y * w.w:(y + 1) * w.w]) for y in range(w.h)])
+
+        check()
+        for t in range(300):
+            s = e.step(scripted_choices(s, rng))
+            if t % 60 == 59:
+                check()
+        x, y = next((x, y) for y in range(w.h) for x in range(w.w) if w.free(x, y))
+        s = e.apply([{"op": "place", "kind": "hut", "x": x, "y": y}])
+        check()
+        s = e.apply([{"op": "clear", "x": x, "y": y}, {"op": "terrain", "x": x, "y": y, "kind": "deep"}])
+        check()
+        self.assertFalse(w.passable(x, y))
+        self.assertEqual(s["terrain"][y][x], D.TERRAIN["deep"].glyph)
+
+    def test_every_map_is_a_place_to_live(self):
+        from genesis.engine import MAPS
+        from genesis.engine.path import regions
+        water = {D.TERRAIN[k].glyph for k in D.WATER}
+        for name in MAPS:
+            for seed in (1, 2, 3):
+                a, b = World(seed, 80, 56, 5, 5, name), World(seed, 80, 56, 5, 5, name)
+                self.assertEqual((a.rows(), a.terrain_rows(), a.start), (b.rows(), b.terrain_rows(), b.start), name)
+                self.assertEqual(len(a.npcs), 5, name)
+                label, sizes = regions(a)
+                home = {label[a.idx(n.x, n.y)] for n in a.npcs}
+                self.assertEqual(len(home), 1, name)  # the founders can all reach each other
+                self.assertGreater(sizes[home.pop()], 600, name)  # and have a country to roam
+                sx, sy = a.start
+                self.assertTrue(all(abs(n.x - sx) <= 6 and abs(n.y - sy) <= 6 for n in a.npcs), name)
+                near = Counter(o.kind for o in a.objs.values() if abs(o.x - sx) <= 8 and abs(o.y - sy) <= 8)
+                self.assertGreaterEqual(sum(n * D.OBJECTS[k].food for k, n in near.items()), 6, (name, seed, near))
+                self.assertGreaterEqual(near["tree"], 3, (name, seed, near))
+                for o in a.objs.values():  # nothing grows in water or on a mountain top
+                    self.assertTrue(D.TERRAIN[a.terrain[a.idx(o.x, o.y)]].buildable, (name, o.kind))
+        sea = sum(row.count(c) for row in World(1, 80, 56, 3, 5, "islands").terrain_rows() for c in water)
+        self.assertGreater(sea, 0.5 * 80 * 56)
+        sand = sum(row.count(D.TERRAIN["sand"].glyph) for row in World(1, 80, 56, 3, 5, "desert").terrain_rows())
+        self.assertGreater(sand, 0.5 * 80 * 56)
+        self.assertEqual(set(World(1, 80, 56, 3, 5, "barren").terrain), {"dirt"})
+        big = World(3, 160, 112, 8, 5, "valley")  # the largest size on offer
+        self.assertEqual(len(big.npcs), 8)
+
+    def test_the_ground_matters(self):
+        e = Engine()
+        e.init(2, 20, 14, 1, 1)
+        w = e.world
+        n = w.npcs[0]
+        for o in list(w.objs.values()):
+            w.remove(o.x, o.y)
+        w.teleport(n, 5, 5)
+        for x, kind in ((6, "shallow"), (7, "deep"), (4, "peak"), (9, "sand")):
+            w.set_terrain(x, 5, kind)
+        self.assertTrue(w.passable(6, 5))        # shallows can be waded...
+        self.assertFalse(w.passable(7, 5))       # ...deep water and mountains cannot be crossed
+        self.assertFalse(w.passable(4, 5))
+        self.assertFalse(w.free(6, 5))           # and nothing is built in water
+        w.place("bush", 6, 4)                    # something to walk toward, through the water
+        w.teleport(n, 5, 6)
+        w.set_terrain(5, 5, "shallow")
+        for x in (4, 6):
+            w.place("rock", x, 6)
+        w.place("rock", 5, 7)
+        w.generate_all_actions()
+        go = next(a for a in w.actions[n.id] if a["kind"] == "goto" and a["what"] == "bush")
+        self.assertEqual((go["dx"], go["dy"], go["cost"]), (0, -1, D.TERRAIN["shallow"].move_cost))
+        self.assertEqual(D.action_ticks(go), D.ACTIONS["goto"].ticks * D.TERRAIN["shallow"].move_cost)
+        self.assertEqual(D.action_ticks({"kind": "goto", "what": "bush"}), D.ACTIONS["goto"].ticks)
+        # things grow faster on good, wet ground than on sand
+        grass = [(x, 10) for x in range(2, 6)]
+        for x, y in grass:
+            w.set_terrain(x, y, "grass")
+        dry_farm, wet_farm, sand_farm = w.place("farm", 14, 12), w.place("farm", 8, 5), w.place("farm", 9, 5)
+        w.set_terrain(8, 5, "grass")
+        times = [w.grow_time(o) for o in (dry_farm, wet_farm, sand_farm)]
+        self.assertEqual(times[0], D.OBJECTS["farm"].regrow)                       # bare earth: as listed
+        self.assertLess(times[1], times[0])                                        # grass by the water
+        self.assertGreater(times[2], times[1])                                     # sand, even by the water
+        self.assertAlmostEqual(w.fertility(8, 5), D.TERRAIN["grass"].fertile * D.WET_BONUS)
+        self.assertEqual(w.fertility(7, 5), 0.0)
+        n.give("wood", 20)  # with wood in hand, building is on offer, and says how good the soil is
+        w.generate_all_actions()
+        build = next(a for a in w.actions[n.id] if a["kind"] == "build" and a["what"] == "farm")
+        self.assertEqual(build["soil"], round(w.fertility(build["x"], build["y"]), 2))
+        self.assertIn("soil", D.describe_action(build, {}, n.to_json()))
+
+    def test_what_grows_wild_can_be_gathered(self):
+        e = Engine()
+        e.init(2, 20, 14, 1, 1)
+        w = e.world
+        n = w.npcs[0]
+        for kind in ("fruit", "cactus", "mushroom"):
+            for o in list(w.objs.values()):
+                w.remove(o.x, o.y)
+            w.teleport(n, 5, 5)
+            w.place(kind, 6, 5)
+            n.inv.clear()
+            w.generate_all_actions()
+            act = next(a for a in w.actions[n.id] if a["kind"] == "forage")
+            self.assertEqual(act["what"], kind)
+            self.assertIn(D.OBJECTS[kind].place, D.describe_action(act, {}, n.to_json()))
+            e.step({n.id: (w.actions[n.id].index(act), 0)})
+            self.assertEqual(n.have("food"), D.OBJECTS[kind].food)
+            self.assertEqual(w.tile(6, 5), D.OBJECTS[kind].spent_glyph)
+            w.teleport(n, 9, 9)
+            w.obj_at(6, 5).ripe = True
+            w._refresh(w.idx(6, 5))
+            w.generate_all_actions()
+            walk = next(a for a in w.actions[n.id] if a["kind"] == "goto" and a["what"] == kind)
+            self.assertIn(D.OBJECTS[kind].place, D.describe_action(walk, {}, n.to_json()))
+
+    def test_villages_live_on_every_map(self):
+        from genesis.engine import MAPS
+
+        async def go(name):
+            sim = Simulation(Engine(), HeuristicBrain(2), SimpleMemory(), SimConfig(seed=2, map_name=name))
+            for _ in range(1500):
+                f = await sim.tick()
+            return sim, f
+        for name in MAPS:
+            sim, f = asyncio.run(go(name))
+            self.assertGreaterEqual(f["stats"]["population"], 3, name)  # nobody lost, and maybe a child or two
+            self.assertEqual((f["map"], len(f["terrain"]), len(f["terrain"][0])), (name, 56, 80))
+            self.assertEqual(f["start"], list(sim.engine.world.start))
+
+
+class PlayerTests(unittest.TestCase):
+    """The player can become a villager, steer them, talk and fight as them,
+    speak to anyone from the sky, and heal, feed or smite."""
+
+    def make(self, **kw):
+        cfg = dict(seed=7, population=3, width=40, height=30)
+        cfg.update(kw)
+        return Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(**cfg))
+
+    def run_until(self, sim, done, ticks=300):
+        async def go():
+            frames = []
+            for _ in range(ticks):
+                frames.append(await sim.tick())
+                await asyncio.sleep(0)
+                if done(frames[-1]):
+                    break
+            return frames
+        return asyncio.run(go())
+
+    def test_a_possessed_body_only_does_what_it_is_told(self):
+        sim = self.make()
+        me = sim.alive()[0]["id"]
+        self.assertTrue(sim.possess(me))
+        frames = self.run_until(sim, lambda f: False, 60)
+        body = [n for n in frames[-1]["npcs"] if n["id"] == me][0]
+        start = next(n for n in frames[0]["npcs"] if n["id"] == me)
+        self.assertEqual((body["x"], body["y"]), (start["x"], start["y"]))  # no orders: it stays put
+        self.assertEqual(frames[-1]["possessed"], me)
+        player = frames[-1]["player"]
+        self.assertEqual(player["id"], me)
+        self.assertTrue(any(a["kind"] == "sleep" for a in player["actions"]))
+        self.assertFalse(any(a["kind"] in ("step", "goto", "wander") for a in player["actions"]))
+        self.assertEqual(sim.decision_stats["player"], 0)
+        # nobody else is steered: only the possessed body gets "step" actions
+        w = sim.engine.world
+        self.assertEqual(w.controlled, {me})
+        other = sim.alive()[1]["id"]
+        self.assertFalse(any(a["kind"] == "step" for a in w.actions[other]))
+
+    def test_walking_somewhere_and_chopping_what_is_there(self):
+        sim = self.make()
+        me = sim.alive()[0]["id"]
+        sim.possess(me)
+        asyncio.run(sim.tick())
+        w = sim.engine.world
+        n = w.npc(me)
+        tree = min((o for o in w.objs.values() if o.kind == "tree" and o.ripe),
+                   key=lambda o: abs(o.x - n.x) + abs(o.y - n.y))
+        self.assertTrue(sim.command({"kind": "walk", "x": tree.x, "y": tree.y}))
+        frames = self.run_until(sim, lambda f: any(e["type"] == "chop" and e["npc"] == me for e in f["fx"]), 400)
+        self.assertTrue(any(e["type"] == "chop" and e["npc"] == me for e in frames[-1]["fx"]))
+        self.assertFalse(w.obj_at(tree.x, tree.y).ripe)          # felled...
+        self.assertEqual(abs(n.x - tree.x) + abs(n.y - tree.y), 1)  # ...from right beside it
+        self.assertGreater(sim.decision_stats["player"], 0)
+        self.assertFalse(sim.command({"kind": "fly"}))
+        # one step at a time, too
+        x0 = n.x
+        dx = 1 if w.passable(n.x + 1, n.y) else -1
+        sim.command({"kind": "step", "dx": dx, "dy": 0})
+        self.run_until(sim, lambda f: n.x != x0, 30)
+        self.assertEqual(n.x, x0 + dx)
+
+    def test_talking_and_hitting_as_someone_else(self):
+        sim = self.make(population=2)
+        me, them = (n["id"] for n in sim.alive())
+        sim.possess(me)
+        sim.command({"kind": "interact", "target": them, "option": "talk", "text": "Hey, where'd you hide the berries?"})
+        frames = self.run_until(sim, lambda f: any(d["npc"] == them and d.get("reply") for d in f["dialogue"]), 400)
+        said = [d for d in frames[-1]["dialogue"] if d["npc"] == me]
+        answer = [d for d in frames[-1]["dialogue"] if d["npc"] == them]
+        self.assertEqual(said[0]["text"], "Hey, where'd you hide the berries?")
+        self.assertTrue(said[0]["player"])
+        self.assertTrue(answer and answer[0]["text"])  # they always answer
+        self.assertIn("berries", " ".join(m.text for m in sim.memory.recall(them, me, 5)))  # and remember it
+        # a blow, with no words at all: they still answer, and hold it against you
+        sim.engine.world.npc(them).health = 100
+        sim.command({"kind": "interact", "target": them, "option": "fight"})
+        frames = self.run_until(sim, lambda f: any(e["type"] == "attack" and e["npc"] == me for e in f["fx"]), 400)
+        self.assertTrue(any(e["type"] == "attack" and e["npc"] == me for e in frames[-1]["fx"]))
+        self.assertTrue(any(d["npc"] == them and d.get("reply") for d in frames[-1]["dialogue"]))
+        self.assertLess(sim.memory.grudge(them, me), 3)
+
+    def test_the_player_answers_whoever_speaks_to_their_body(self):
+        sim = self.make(population=2)
+        a, me = (n["id"] for n in sim.alive())
+        sim.possess(me)
+        w = sim.engine.world
+        asyncio.run(sim.tick())
+        w.teleport(w.npc(a), *next((w.npc(me).x + dx, w.npc(me).y + dy) for dx, dy in D.DIRS
+                                   if w.passable(w.npc(me).x + dx, w.npc(me).y + dy)))
+        w.generate_all_actions()
+        sim.state = sim.engine.state()
+        views = {n["id"]: sim.view(n) for n in sim.alive()}
+        act = next(x for x in views[a].actions if x["kind"] == "interact" and x["target"] == me)
+
+        async def go(reply, accept):
+            task = asyncio.ensure_future(sim._interaction(views, a, act, "reflex", False))
+            for _ in range(100):
+                await asyncio.sleep(0)
+                if sim.incoming is not None:
+                    break
+            seen = sim._player_frame()["incoming"]
+            self.assertTrue(sim.answer(reply, accept))
+            self.assertFalse(sim.answer("twice", True))  # (only one answer per question)
+            return seen, await task
+        seen, result = asyncio.run(go("Get lost, I'm busy.", False))
+        self.assertEqual(seen["from"], a)
+        self.assertEqual(result["line"]["reply"], "Get lost, I'm busy.")
+        self.assertTrue(result["line"]["player_reply"])
+        self.assertIsNone(sim.incoming)
+
+    def test_the_voice_from_the_sky_and_the_powers_of_a_god(self):
+        sim = self.make()
+        a, b, c = (n["id"] for n in sim.alive())
+        self.assertTrue(sim.say(a, "Build me a temple."))
+        self.assertFalse(sim.say(a, "   "))
+        frames = self.run_until(sim, lambda f: any(d["npc"] == a and d["kind"] == "voice" for d in f["dialogue"]), 50)
+        lines = frames[-1]["dialogue"]
+        self.assertEqual([d["npc"] for d in lines if d["kind"] == "voice"], [-1, a])
+        self.assertIn("temple", sim.memory.recall(a, -1, 5)[0].text)
+        sim.engine.world.npc(b).health = 20
+        sim.engine.world.npc(b).hunger = 10
+        sim.god("heal", b)
+        sim.god("feed", b)
+        sim.god("smite", c)
+        self.assertFalse(sim.god("explode", a))
+        f = asyncio.run(sim.tick())
+        nb = next(n for n in f["npcs"] if n["id"] == b)
+        self.assertEqual(nb["health"], 100)
+        self.assertGreaterEqual(nb["hunger"], 99)
+        self.assertGreaterEqual(nb["inv"].get("food", 0), 3)
+        self.assertTrue(any("struck down by lightning" in line for line in f["log"]))
+        self.assertTrue(any("heal" in line for line in f["log"]))
+        self.assertEqual(f["stats"]["population"], 2)
+        # becoming someone who then dies hands control back
+        sim.possess(a)
+        sim.god("smite", a)
+        f = asyncio.run(sim.tick())
+        f = asyncio.run(sim.tick())
+        self.assertIsNone(f["possessed"])
+        self.assertIsNone(f["player"])
+
+
+class ServerTests(unittest.TestCase):
+    def test_start_screen_preview_and_new_world(self):
+        import argparse
+
+        from starlette.testclient import TestClient
+
+        from genesis.config import add_sim_args
+        from genesis.server import create_app
+        p = argparse.ArgumentParser()
+        add_sim_args(p)
+        args = p.parse_args(["--brain", "heuristic", "--memory", "simple"])
+        args.tick_ms, args.paused, args.autostart = 50, False, False
+
+        def until(ws, want):
+            for _ in range(400):
+                msg = ws.receive_json()
+                if want(msg):
+                    return msg
+            self.fail("the message never came")
+
+        with TestClient(create_app(args)) as client, client.websocket_connect("/ws") as ws:
+            defs = ws.receive_json()
+            self.assertEqual(defs["type"], "defs")
+            self.assertEqual([m["key"] for m in defs["maps"]][0], "valley")
+            self.assertIn("grass", defs["terrain"])
+            control = ws.receive_json()
+            self.assertTrue(control["menu"] and control["paused"])  # waiting on the start screen
+            first = ws.receive_json()
+            self.assertEqual((first["type"], first["tick"], first["map"]), ("frame", 0, "valley"))
+            self.assertEqual(len(first["terrain"]), first["height"])
+            # what would a desert look like? (only the asker is told, and the world does not change)
+            ws.send_json({"cmd": "preview", "map": "desert", "seed": 5, "width": 40, "height": 30, "id": 9})
+            pv = until(ws, lambda m: m["type"] == "preview")
+            self.assertEqual((pv["map"], pv["seed"], pv["width"], pv["height"], pv["id"]), ("desert", 5, 40, 30, 9))
+            self.assertEqual((len(pv["terrain"]), len(pv["terrain"][0])), (30, 40))
+            self.assertIn(D.TERRAIN["sand"].glyph, "".join(pv["terrain"]))
+            # start it for real: the same land, and now time moves
+            ws.send_json({"cmd": "reset", "map": "desert", "seed": 5, "width": 40, "height": 30, "population": 4})
+            new = until(ws, lambda m: m["type"] == "frame" and m["world"] != first["world"])
+            self.assertEqual((new["map"], new["width"], new["terrain"], new["tiles"]),
+                             ("desert", 40, pv["terrain"], pv["tiles"]))
+            self.assertEqual(new["start"], pv["start"])
+            self.assertEqual(new["stats"]["population"], 4)
+            control = until(ws, lambda m: m["type"] == "control")
+            self.assertFalse(control["menu"] or control["paused"])
+            later = until(ws, lambda m: m["type"] == "frame" and m["tick"] >= 3)
+            self.assertNotIn("terrain", later)  # the ground has not changed, so it is not sent again
 
 
 if __name__ == "__main__":

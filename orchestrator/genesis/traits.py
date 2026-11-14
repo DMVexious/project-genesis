@@ -96,11 +96,12 @@ def splice_look(a: dict, b: dict, rng: random.Random, mutation_rate: float = MUT
 
 
 # --- Persona ------------------------------------------------------------------
-# Every NPC carries one strange belief and one way of talking. They go into the
-# dialogue prompt so speech is specific instead of "Hello, how are you?". Beliefs
-# are inherited (families share their madness) and spread through conversation,
-# so cults and feuding folklores can form. Each belief has a sample line that
-# the heuristic brain says and that the LLM sees as a tone example.
+# Every NPC carries one strange belief and one way of talking. Both go into the
+# dialogue prompt so each villager sounds like themselves. Beliefs are inherited
+# (families share their madness) and spread through conversation, so cults and
+# feuding folklores can form; they colour a villager's talk now and then rather
+# than being all they talk about. Each belief has a sample line the heuristic
+# brain occasionally says.
 BELIEFS: list[tuple[str, str]] = [
     ("believes the dead come back as crows and keep score", "That crow owes me three berries. It knows."),
     ("is sure every tree remembers each axe that touched it", "Chop quietly. The old ones are counting."),
@@ -130,23 +131,25 @@ BELIEFS: list[tuple[str, str]] = [
     ("collects teeth and thinks they whisper prophecies", "My teeth say you die on a Tuesday."),
 ]
 
+# How someone talks. These are everyday manners of speaking, not theatre: the
+# point is that two villagers saying the same thing sound like different people.
 VOICES = [
-    "talk in blunt broken fragments, like a caveman",
-    "talk like a doom prophet announcing the end",
-    "answer everything with an unsettling question",
-    "speak in pompous, old-fashioned royal language",
-    "are bone-dry and sarcastic",
-    "ramble nervously and change topic mid-sentence",
-    "always talk about yourself in the third person, by name",
-    "talk like a shifty con artist always selling something",
-    "speak only in riddles",
-    "overshare gross bodily details",
-    "are relentlessly, creepily cheerful",
-    "whisper conspiracies about the other villagers",
+    "keep it short and blunt, few words",
+    "grumble about everything, half joking",
+    "tease people and joke around",
+    "are dry and sarcastic",
+    "ramble and lose your thread halfway",
+    "talk about yourself by name instead of saying I",
+    "are always trying to talk people into a deal",
+    "love gossip about the other villagers",
+    "fuss over people and ask if they have eaten",
+    "overshare about your aches and your stomach",
+    "get excited about small things",
+    "mutter, sure somebody is up to something",
     "flirt with everyone, badly",
-    "talk like a tired old soldier who has seen too much",
-    "insult people as a form of affection",
-    "speak like a tiny, very serious philosopher",
+    "sound worn out, like you have seen it all",
+    "insult people you like, as a joke",
+    "ask nosy questions",
 ]
 
 PERSONA_MUTATION = 0.25  # chance a child invents a belief/voice instead of inheriting one

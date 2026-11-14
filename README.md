@@ -60,7 +60,7 @@ Small models are bad at rules, so Genesis never asks them to follow any. Every t
 What one villager sees on its turn (abridged from `python -m genesis.terminal --show-prompt`):
 
 ```text
-You are Doian, an NPC surviving in a harsh, barren world.
+You are Doian, one of a handful of people making a life in a wild land.
 Your traits are [Hostile, Lazy, Charismatic]. Act accordingly.
 
 health 100 · fullness 97 · energy 82 · wood 0 · home: none
@@ -126,7 +126,8 @@ python -m venv .venv
 .venv\Scripts\pip install -r orchestrator\requirements.txt
 
 cd orchestrator
-..\.venv\Scripts\python -m genesis.server        # open http://127.0.0.1:8765
+..\.venv\Scripts\python -m genesis.server        # open http://127.0.0.1:8765 and pick a land
+..\.venv\Scripts\python -m genesis.server --autostart --map desert   # skip the start screen
 ..\.venv\Scripts\python -m genesis.terminal      # Phase 1 ASCII view
 ..\.venv\Scripts\python -m genesis.terminal --show-prompt   # inspect an NPC prompt + GBNF grammar
 ..\.venv\Scripts\python -m unittest discover -s tests -v
@@ -201,23 +202,33 @@ and one way of talking ("speaks only in riddles"); both show in the NPC panel.
   folklores form on their own; conversions show in the log as 🌀.
 * **Two-sided:** the listener always replies, including when refusing a trade or mate, and both
   sides remember the exchange.
-* **No small talk:** prompts carry the persona, memories and recent village news; lines that are
-  generic ("hello", "how are you", "we must survive") or copied from the tone examples get
-  re-rolled once. Speech runs at a higher temperature than decisions, with repeat penalties.
+* **Casual, in character:** prompts ask for the short, plain way people talk to someone they see
+  every day, coloured by temperament, way of talking, current mood (hungry, tired, hurt...),
+  memories and village news. The odd belief only comes up now and then. Lines that sound stiff
+  ("greetings", "we must survive", "let us") or are copied from the tone examples get re-rolled once. Speech runs at a higher temperature than decisions, with repeat penalties.
 
 </details>
 
 <details>
 <summary><b>Time, pacing and the camera</b></summary>
 
-* **Asynchronous NPCs.** The world ticks every ~150 ms (`--tick-ms`) and never waits for the LLM.
-  Every action lasts several ticks: a step ~2, chopping ~5, sleeping ~7, building ~10. That is
-  scaled by each NPC's own pace (0.8 to 1.5x) plus random jitter, so NPCs act out of step with each
-  other. Bonsai calls run in the background: an NPC shows 💭 while it waits, and everyone else
+* **Asynchronous NPCs.** The world ticks every ~220 ms (`--tick-ms`) and never waits for the LLM.
+  Every action lasts several ticks: a step ~2, eating ~4, foraging ~6, chopping ~9, sleeping ~10,
+  building a hut ~18. That is scaled by each NPC's own pace (0.8 to 1.5x) plus random jitter, so
+  NPCs act out of step with each other.
+* **Work takes time.** Chopping, foraging, building, crafting and eating show a time bar over the
+  villager and only take effect when it fills (the tree falls on the last swing, not the first).
+  If the tree is gone or the wood is spent by then, the effort is lost.
+* **Taking turns.** A villager waits ~110 ticks between conversations it starts, two conversations
+  never begin within 9 ticks of each other, and the listener stays put until the exchange is over. Bonsai calls run in the background: an NPC shows 💭 while it waits, and everyone else
   carries on. At most `--llm-budget` (default 2) decision calls and 3 conversations are in flight at once.
-* **World time.** Hunger, energy, ageing and regrowth advance once every `decay_every` = 3 ticks
+* **World time.** Hunger, energy, ageing and regrowth advance once every `decay_every` = 5 ticks
   (`SimConfig.decay_every`), so survival balance holds with multi-tick actions.
-* **Map.** The default is 80x56 with 16 settlers (`--width/--height/--population`). The view is a
+* **Maps.** Seven kinds of land, chosen on the start screen (with a preview of each) or with
+  `--map`: Green Valley (the default), Great Forest, Archipelago, Highlands, Desert Oasis, River
+  Delta and the original Barren Plain. Sizes run from 60x42 to 160x112; the default is 80x56 with
+  3 founders, who start side by side at a good campsite (`--width/--height/--population`).
+  A minimap in the corner shows the whole land; click it to look elsewhere (M hides it). The view is a
   camera: drag to pan, scroll to zoom, WASD or arrow keys, click an NPC to follow it.
 * Speech bubbles fade 24 ticks (~3.5 s) after they appear, which is the PRD's "4 ticks" rescaled for the shorter tick.
 
@@ -226,11 +237,27 @@ and one way of talking ("speaks only in riddles"); both show in the NPC panel.
 <details>
 <summary><b>Game rules:</b> everything is declared in <code>orchestrator/genesis/engine/defs.py</code></summary>
 
-Times below are in units of world time (one unit every `decay_every` = 3 ticks).
+Times below are in units of world time (one unit every `decay_every` = 5 ticks).
 
-* Tiles: dirt, rock, tree → stump (regrows in 60), berry bush (regrows in 40), and the buildings below.
+* **Ground:** grass, forest floor, bare earth, sand, rocky ground and snow can be walked and built
+  on; shallow water can be waded (three times slower) but not built in; deep water and mountains
+  cannot be crossed (rivers have fords). Things grow at a speed set by the ground (grass 1.3x,
+  forest 1.15x, earth 1x, sand 0.5x, rock 0.4x, snow 0.25x) and 25% faster within two tiles of water.
+* **Growing wild:** trees → stump (regrow in 60 on bare earth), berry bushes (40), and by country:
+  apple trees on the grass (3 food), cacti in the desert (1), mushrooms under the trees (1).
+* Villagers know what lies within 40 steps of them; further off, they have to wander to find it.
 * Stats 0–100. Fullness −1/unit, energy −1 every 2 units plus labour costs; at 0 either one drains health.
-* Chop +4 wood, forage +2 food from a bush or +3 from a ripe farm, eat +30 fullness, sleep +20 energy.
+* Forage +2 food from a bush or +3 from a ripe farm, eat +30 fullness, sleep +20 energy.
+* **Trees drop their wood.** A felled tree leaves 4 wood on the ground where it stood; whoever walks
+  over it picks it up. Most villagers leave other people's wood alone, the hostile ones do not, and
+  the owner remembers who took it. The dead drop everything they carried. Things left on the ground
+  rot away after 300 units.
+* **Inventory.** Everyone carries their own things, up to 24 wood, 12 food and one spear; what does
+  not fit stays on the ground. Click a villager to see their slots.
+* **Trading and giving.** Any two kinds of item can be swapped at a fixed rate (wood is worth 1,
+  food 2, a spear 6: so 2 wood for 1 food, 6 wood for a spear). The other side may refuse, and
+  nobody sells their last food while hungry. Items can also be given away for nothing: villagers
+  feed hungry friends and family, and the gift is remembered.
 * **Buildings are the NPC's choice.** With enough wood the engine offers one build action per type
   and only picks the nearest free tile; which to build (and whether to) is up to the brain:
   * **Hut** (10 wood): sleep +35 energy and a small heal. An NPC's first hut becomes its home.
@@ -240,13 +267,14 @@ Times below are in units of world time (one unit every `decay_every` = 3 ticks).
     turn, and reflexes never build (unless the LLM is paused for being slow).
 * **Homes** pass to the eldest living child without one when the owner dies; otherwise the hut stands
   empty until a homeless NPC sleeps beside it and moves in.
-* 5 wood → spear (+12 damage). Fight: 75% hit for 8–15 damage, 50% retaliation; the killer loots wood and food.
+* 5 wood → spear (+12 damage). Fight: 75% hit for 8–15 damage, 50% retaliation; the loser's things fall to the ground.
 * **Life cycle:** children grow up at age 60; from age 700 an elder may die of old age at any unit
   (chance (age − 700) / 40000 per unit, so most die between ~800 and ~1000). Elders cannot have children.
-  At the default 150 ms/tick, an NPC lives roughly 5–7 minutes.
+  At the default 220 ms/tick, an NPC lives roughly 15–18 minutes.
 * Mate: both adults and not elders, social urge ≥ 30 each, fed, healthy, nobody else within 1 tile,
   population < 30, and neither parent had a child in the last 100 units of world time (~45 s).
-  Talking lowers the urge by 5, mating resets it to 0.
+  Talking lowers the urge by 5, mating resets it to 0. The child is not born on the spot: one
+  parent carries it for 40 units of world time (🤰) and it is born wherever they are then.
 * Courtship (orchestrator): "mate" is only offered once both NPCs are fond of each other
   (affection ≥ 2 each way, i.e. a couple of friendly exchanges), and the partner must still consent.
 * Instinct (orchestrator): small models almost never start a family on their own (bonsai-2:2b chose
@@ -259,6 +287,27 @@ Times below are in units of world time (one unit every `decay_every` = 3 ticks).
 </details>
 
 <details>
+<summary><b>Attributes, skills and roles</b></summary>
+
+Everyone has five attributes from 1 to 10 (strength, agility, intelligence, endurance, charisma):
+founders roll 3 to 7 in each, and children land between their parents, give or take one. Six
+skills (woodcutting, foraging, building, crafting, combat, speech) go from level 0 to 10 with
+practice: ten felled trees make a level-3 woodcutter, a lifetime at it a master.
+
+* A skill makes its action quicker (about 40% at level 10); woodcutting and foraging also yield
+  one more at levels 3, 6 and 9, and combat lands more blows.
+* Practising a skill slowly raises the attributes it leans on. Strength adds damage and carrying
+  room, agility quickens walking and dodging, endurance cuts the energy work costs, intelligence
+  speeds up learning, charisma helps with courting and with spreading beliefs.
+* Someone good enough at their best skill is known for it (woodcutter, forager, builder, crafter,
+  fighter, talker). The LLM is told its attributes, skills and role, and the heuristic brain leans
+  toward what a villager is good at, so trades form by themselves.
+* Lives are counted in years (one year is about 22 s at the default speed): children grow up at 16,
+  elders start at 60 and most die between 70 and 80.
+
+</details>
+
+<details>
 <summary><b>Looks:</b> inherited, procedurally drawn appearances</summary>
 
 Every NPC inherits an appearance from its parents the same way as its traits (50/50 per slot,
@@ -267,6 +316,10 @@ outfit colour and hat. The front end draws each combination procedurally; childr
 and elders turn white-haired and walk with a stick. The coloured ring under each NPC's feet shows
 its temperament, and a gravestone marks where someone died for about a minute.
 URL options: `?zoom=2.5` sets the starting zoom, `?follow=<npc id>` follows an NPC.
+
+**Sound.** Click a villager and you hear the world from where they stand: their axe, their
+footsteps, their voice (everyone has their own pitch), the blow when someone hits them. All of it
+is synthesised in the browser; the 🔊 button mutes it.
 
 </details>
 
@@ -316,7 +369,10 @@ sequence of choices always give the same world (`test_same_seed_same_story`).
 * *An action* is an `ActionDef` in `defs.py`, a handler pair in `actions.py`, and a scorer in
   `brain.py` for the heuristic brain. A missing piece fails at import time, not mid-game.
 * *An interaction option* is an `InteractionDef` plus an `@option` handler.
-* *A map* is one function in `mapgen.py` registered in `MAPS`.
+* *A map* is one function in `mapgen.py` registered in `MAPS`: it lays out the ground from a few
+  smooth random fields, and `scatter` grows the right things on each kind of ground.
+* *A kind of ground* is a `TerrainDef` (walkable, buildable, fertility, how slow to cross) plus its
+  textures in `web/js/textures.js`.
 
 The web front end receives the registry once per connection (`{"type": "defs"}`) and reads
 labels, icons and counters from it.

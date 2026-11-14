@@ -12,10 +12,10 @@ and the engine carries it out.
 from __future__ import annotations
 
 from . import actions as _actions  # noqa: F401  (registers the handlers and checks they are complete)
-from .mapgen import DEFAULT_MAP, MAPS
+from .mapgen import DEFAULT_MAP, GAME_MAP, MAPS
 from .world import Rng, World
 
-__all__ = ["Engine", "World", "Rng", "MAPS", "DEFAULT_MAP"]
+__all__ = ["Engine", "World", "Rng", "MAPS", "DEFAULT_MAP", "GAME_MAP"]
 
 
 class Engine:

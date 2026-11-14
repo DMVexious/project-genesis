@@ -6,7 +6,7 @@ import logging
 import os
 
 from .brain import make_brain
-from .engine import DEFAULT_MAP, MAPS, Engine
+from .engine import GAME_MAP, MAPS, Engine
 from .memory import make_memory
 from .sim import SimConfig, Simulation
 
@@ -15,8 +15,9 @@ def add_sim_args(p: argparse.ArgumentParser):
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--width", type=int, default=80)
     p.add_argument("--height", type=int, default=56)
-    p.add_argument("--population", type=int, default=16)
-    p.add_argument("--map", choices=sorted(MAPS), default=DEFAULT_MAP, help="world preset")
+    p.add_argument("--population", type=int, default=3, help="founders (they start together)")
+    p.add_argument("--map", choices=list(MAPS), default=GAME_MAP,
+                   help="the kind of land: " + ", ".join(f"{m.key} ({m.label})" for m in MAPS.values()))
     p.add_argument("--brain", choices=["auto", "llm", "ollama", "heuristic"], default="auto",
                    help="auto = llama.cpp if its server answers, else Ollama, else heuristic")
     p.add_argument("--llm-url", default="http://127.0.0.1:8080", help="llama-server base URL")

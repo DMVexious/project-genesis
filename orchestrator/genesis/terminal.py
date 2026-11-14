@@ -24,6 +24,8 @@ UNKNOWN_TILE = ("?", "37")
 def render(frame: dict, recent: list[str]) -> str:
     grid = [[f"\x1b[{c}m{g}\x1b[0m" for g, c in (GLYPHS.get(t, UNKNOWN_TILE) for t in row)]
             for row in frame["tiles"]]
+    for x, y, _items in frame.get("drops", []):
+        grid[y][x] = "\x1b[33;1m∗\x1b[0m"  # something lying on the ground
     for n in frame["npcs"]:
         ch = NPC_CHARS[n["id"] % len(NPC_CHARS)]
         color = "31" if not n["alive"] else "97;1"

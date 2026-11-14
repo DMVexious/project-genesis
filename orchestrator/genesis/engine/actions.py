@@ -9,17 +9,17 @@ A brain never invents an action: it picks an index into the list
 """
 from __future__ import annotations
 
-from .defs import (ACTIONS, BUILDINGS, COST_ATTACK, COST_DEFEND, COST_MATE, DIRS, EAT_HUNGER, ELDER_AGE,
-                   GOTO_LIMIT, INTERACTIONS, ITEMS, MATE_COOLDOWN, MATE_PRIVACY, MATE_SOCIAL, MATURE_AGE,
-                   MAX_TARGETS, OBJECTS, POP_CAP, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
-                   can_afford)
+from .defs import (ACTIONS, ATTR_AVERAGE, BUILDINGS, COST_ATTACK, COST_DEFEND, COST_MATE, DIRS, EAT_HUNGER, ELDER_AGE,
+                   GESTATION, GOTO_BIT, GOTO_LIMIT, INTERACTIONS, ITEMS, MATE_COOLDOWN, MATE_PRIVACY, MATE_SOCIAL,
+                   MATURE_AGE, MAX_TARGETS, OBJECTS, POP_CAP, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
+                   TERRAIN, can_afford, harvest_yield, tire_rate, trade_terms)
 from .path import build_site, scan
 from .world import cheb
 
 OFFER: dict = {}
 RUN: dict = {}
-OPTION_OK: dict = {}
-OPTION_RUN: dict = {}
+OPTION_LIST: dict = {}   # interaction key -> fn(world, a, b) -> the option strings on offer
+OPTION_RUN: dict = {}    # interaction key -> fn(world, a, b, *details)
 
 
 def offers(kind):
@@ -37,8 +37,13 @@ def runs(kind):
 
 
 def option(key, available=None):
+    """Register an interaction. ``available(world, a, b)`` says when it is on
+    offer: True/False, or a list of detailed options such as "trade:wood:food"."""
     def reg(fn):
-        OPTION_OK[key] = available or (lambda w, a, b: True)
+        def listing(w, a, b):
+            r = available(w, a, b) if available else True
+            return ([key] if r else []) if isinstance(r, bool) else r
+        OPTION_LIST[key] = listing
         OPTION_RUN[key] = fn
         return fn
     return reg
@@ -59,9 +64,18 @@ class Context:
     @property
     def scan(self) -> dict:
         if self._scan is None:
-            glyphs = [o.glyph for o in OBJECTS.values() if o.goto]
-            self._scan = scan(self.world, self.n.x, self.n.y, glyphs, self.far, GOTO_LIMIT)
+            n = self.n  # only things on the ground this NPC still has room for are worth a walk
+            piles = [i for i, p in self.world.drops.items() if any(n.room(k) > 0 for k in p["items"])]
+            self._scan = scan(self.world, n.x, n.y, GOTO_BIT, self.far, GOTO_LIMIT, piles)
         return self._scan
+
+    def step(self, act: dict, dx: int, dy: int) -> dict:
+        """Finish a "take one step that way" action: slow ground costs extra time."""
+        w, n = self.world, self.n
+        cost = TERRAIN[w.terrain[w.idx(n.x + dx, n.y + dy)]].move_cost
+        if cost > 1:
+            act["cost"] = cost
+        return act
 
 
 def generate_actions(world, n) -> list[dict]:
@@ -79,7 +93,14 @@ def execute(world, n, act: dict, opt: int):
 
 
 def _spend(n, energy: int):
-    n.energy = max(0, n.energy - energy)
+    """Pay an action's energy cost (the tough pay less)."""
+    n.energy = max(0, n.energy - max(1, round(energy * tire_rate({"attrs": n.attrs}))))
+
+
+def _practice(w, n, kind: str):
+    d = ACTIONS[kind]
+    if d.skill:
+        w.train(n, d.skill, d.xp)
 
 
 # --- rest and food -------------------------------------------------------------
@@ -128,7 +149,7 @@ def _harvestable(w, n, kind):
 def _offer_harvest(kind):
     def offer(w, n, ctx):
         o = _harvestable(w, n, kind)
-        return [{"kind": kind, "x": o.x, "y": o.y}] if o else []
+        return [{"kind": kind, "what": o.kind, "x": o.x, "y": o.y}] if o else []
     return offer
 
 
@@ -139,9 +160,14 @@ def _run_harvest(kind):
         if o is None or not o.ripe or o.spec.harvest != kind or abs(x - n.x) + abs(y - n.y) != 1:
             return w.fail(n, kind)
         w.harvest(o)
-        for item, amount in o.spec.gives.items():
-            n.give(item, amount)
+        gives = harvest_yield(o.spec, n.level(ACTIONS[kind].skill))  # (the practised get more out of it)
+        if o.spec.drops and w.passable(x, y):
+            w.drop(x, y, gives, n.id)  # it falls where the thing stood; walk over to pick it up
+        else:
+            spill = {item: n.take(item, amount) for item, amount in gives.items()}
+            w.drop(n.x, n.y, spill, n.id)  # whatever the NPC cannot carry
         _spend(n, o.spec.harvest_energy)
+        _practice(w, n, kind)
         w.events.append({"type": kind, "npc": n.id, "x": x, "y": y, "what": o.kind})
     return run
 
@@ -160,7 +186,8 @@ def _(w, n, ctx):
     site = build_site(w, n)
     if not site:
         return []
-    return [{"kind": "build", "what": b.key, "x": site[0], "y": site[1]} for b in can]
+    soil = round(w.fertility(*site), 2)  # how well things will grow there
+    return [{"kind": "build", "what": b.key, "x": site[0], "y": site[1], "soil": soil} for b in can]
 
 
 @runs("build")
@@ -172,6 +199,7 @@ def _(w, n, act, opt):
     o = w.place(spec.key, x, y, owner=n.id)
     n.pay(spec.cost)
     _spend(n, spec.build_energy)
+    w.train(n, "building", spec.build_ticks)  # (bigger jobs teach more)
     w.events.append({"type": "build", "npc": n.id, "what": spec.key, "x": x, "y": y, "obj": o.id})
 
 
@@ -193,7 +221,32 @@ def _(w, n, act, opt):
     n.pay(r.cost)
     n.give(r.key, 1)
     _spend(n, r.energy)
+    _practice(w, n, "craft")
     w.events.append({"type": "craft", "npc": n.id, "what": r.key})
+
+
+# --- picking things up -----------------------------------------------------------------
+@offers("collect")
+def _(w, n, ctx):
+    r = ctx.scan.get("cell")
+    if not r:
+        return []
+    dist, dx, dy, x, y = r
+    pile = w.pile_at(x, y)
+    by = w.npc(pile["by"])
+    # whose it is: whoever left it there, while they live (-1 = nobody's)
+    owner = by.id if by is not None and by.alive else -1
+    return [ctx.step({"kind": "collect", "x": x, "y": y, "dist": dist, "dx": dx, "dy": dy,
+                      "items": dict(pile["items"]), "owner": owner}, dx, dy)]
+
+
+@runs("collect")
+def _(w, n, act, opt):
+    if w.pile_at(n.x, n.y):
+        if not w.pickup(n):
+            w.fail(n, "collect")
+    elif not w.move(n, act["dx"], act["dy"]):  # (arriving on the tile picks it up)
+        w.fail(n, "collect")
 
 
 # --- moving ------------------------------------------------------------------------
@@ -203,7 +256,7 @@ def _(w, n, ctx):
     for o in OBJECTS.values():
         r = ctx.scan.get(o.glyph) if o.goto else None
         if r and r[0] > 0:
-            out.append({"kind": "goto", "what": o.key, "dist": r[0], "dx": r[1], "dy": r[2]})
+            out.append(ctx.step({"kind": "goto", "what": o.key, "dist": r[0], "dx": r[1], "dy": r[2]}, r[1], r[2]))
     return out
 
 
@@ -213,7 +266,8 @@ def _(w, n, ctx):
     for o in ctx.far:
         r = ctx.scan.get(o.id)
         if r and r[0] > 0:
-            out.append({"kind": "goto_npc", "target": o.id, "dist": r[0], "dx": r[1], "dy": r[2]})
+            out.append(ctx.step({"kind": "goto_npc", "target": o.id, "dist": r[0], "dx": r[1], "dy": r[2]},
+                                r[1], r[2]))
     return out
 
 
@@ -224,11 +278,21 @@ def _run_step(w, n, act, opt):
 
 runs("goto")(_run_step)
 runs("goto_npc")(_run_step)
+runs("step")(_run_step)
+
+
+@offers("step")
+def _(w, n, ctx):
+    if n.id not in w.controlled:
+        return []
+    return [ctx.step({"kind": "step", "dx": dx, "dy": dy}, dx, dy) for dx, dy in DIRS if w.passable(n.x + dx, n.y + dy)]
 
 
 @offers("wander")
 def _(w, n, ctx):
-    return [{"kind": "wander"}] if any(w.passable(n.x + dx, n.y + dy) for dx, dy in DIRS) else []
+    if not any(w.passable(n.x + dx, n.y + dy) for dx, dy in DIRS):
+        return []
+    return [ctx.step({"kind": "wander"}, 0, 0)]  # (which way is decided on the move: slow if they stand in water)
 
 
 @runs("wander")
@@ -242,7 +306,12 @@ def _(w, n, act, opt):
 
 # --- other people --------------------------------------------------------------------
 def interact_options(w, a, b) -> list[str]:
-    return [key for key in INTERACTIONS if OPTION_OK[key](w, a, b)]
+    """Everything ``a`` may do with ``b`` right now. Some options carry details:
+    "trade:wood:food" (give wood, get food), "give:food"."""
+    out: list[str] = []
+    for key in INTERACTIONS:
+        out.extend(OPTION_LIST[key](w, a, b))
+    return out
 
 
 @offers("interact")
@@ -259,9 +328,12 @@ def _(w, n, act, opt):
         return w.fail(n, "interact")
     opts = act["options"]
     choice = opts[opt] if 0 <= opt < len(opts) else "talk"
-    if choice not in OPTION_RUN or not OPTION_OK[choice](w, n, t):
+    if choice not in interact_options(w, n, t):
         return w.fail(n, "interact")
-    OPTION_RUN[choice](w, n, t)
+    key, *details = choice.split(":")
+    OPTION_RUN[key](w, n, t, *details)
+    if n.alive:
+        w.train(n, INTERACTIONS[key].skill, INTERACTIONS[key].xp)
 
 
 @option("talk")
@@ -272,58 +344,78 @@ def _(w, a, b):
 
 
 def _hit_bonus(n) -> int:
-    return sum(ITEMS[k].damage for k in n.inv)
+    """Extra damage: a weapon in hand, a strong arm, a practised fighter."""
+    return sum(ITEMS[k].damage for k in n.inv) + (n.attrs["strength"] - ATTR_AVERAGE) + n.level("combat") // 2
 
 
-def _loot(winner, loser):
-    for item in [k for k in loser.inv if ITEMS[k].loot]:
-        winner.give(item, loser.inv.pop(item))
+def hit_chance(a, b) -> int:
+    """Percent chance that ``a`` lands a blow on ``b``."""
+    return max(40, min(95, 75 + 2 * a.level("combat") - 2 * (b.attrs["agility"] - ATTR_AVERAGE)))
 
 
 @option("fight")
 def attack(w, a, b):
     _spend(a, COST_ATTACK)
-    hit = w.rng.below(100) < 75
+    hit = w.rng.below(100) < hit_chance(a, b)
     dmg = 0
     if hit:
-        dmg = 8 + w.rng.below(8) + _hit_bonus(a)
+        dmg = max(1, 8 + w.rng.below(8) + _hit_bonus(a))
         b.health = max(0, b.health - dmg)
     w.events.append({"type": "attack", "npc": a.id, "target": b.id, "hit": hit,
                      "damage": dmg, "retaliation": False})
     if b.health <= 0:
-        _loot(a, b)
-        w.kill(b, "combat", a.id)
+        w.kill(b, "combat", a.id)  # (what they carried falls to the ground)
         return
     if w.rng.below(100) < 50:
-        rdmg = 5 + w.rng.below(6) + _hit_bonus(b)
+        rdmg = max(1, 5 + w.rng.below(6) + _hit_bonus(b))
+        w.train(b, "combat", 5)  # fighting back is practice too
         a.health = max(0, a.health - rdmg)
         _spend(b, COST_DEFEND)
         w.events.append({"type": "attack", "npc": b.id, "target": a.id, "hit": True,
                          "damage": rdmg, "retaliation": True})
         if a.health <= 0:
-            _loot(b, a)
             w.kill(a, "combat", b.id)
 
 
-def trade_ok(w, a, b) -> bool:
-    return (a.have("wood") >= 2 and b.have("food") >= 1) or (a.have("food") >= 1 and b.have("wood") >= 2)
+def trade_ok(w, a, b, give: str, get: str) -> bool:
+    """Can ``a`` hand over ``give`` for ``b``'s ``get`` at the going rate?"""
+    if give == get or give not in ITEMS or get not in ITEMS:
+        return False
+    n, m = trade_terms(give, get)
+    return a.have(give) >= n and b.have(get) >= m and a.room(get) >= m and b.room(give) >= n
 
 
-@option("trade", trade_ok)
-def _(w, a, b):
-    if a.have("wood") >= 2 and b.have("food") >= 1:
-        a.give("wood", -2); b.give("wood", 2); b.give("food", -1); a.give("food", 1)
-        gave = "wood"
-    else:
-        a.give("food", -1); b.give("food", 1); b.give("wood", -2); a.give("wood", 2)
-        gave = "food"
-    w.events.append({"type": "trade", "npc": a.id, "target": b.id, "gave": gave})
+def trades(w, a, b) -> list[str]:
+    return [f"trade:{give}:{get}" for give in ITEMS for get in ITEMS if trade_ok(w, a, b, give, get)]
+
+
+@option("trade", trades)
+def _(w, a, b, give, get):
+    n, m = trade_terms(give, get)
+    a.give(give, -n); b.give(give, n)
+    b.give(get, -m); a.give(get, m)
+    w.events.append({"type": "trade", "npc": a.id, "target": b.id, "gave": give, "gave_n": n,
+                     "got": get, "got_n": m})
+
+
+def gifts(w, a, b) -> list[str]:
+    return [f"give:{k}" for k, d in ITEMS.items() if a.have(k) >= d.gift and b.room(k) >= d.gift]
+
+
+@option("give", gifts)
+def _(w, a, b, item):
+    n = ITEMS[item].gift
+    a.give(item, -n)
+    b.give(item, n)
+    w.events.append({"type": "gift", "npc": a.id, "target": b.id, "item": item, "n": n})
 
 
 def mate_ok(w, a, b) -> bool:
     if a.age < MATURE_AGE or b.age < MATURE_AGE or a.age >= ELDER_AGE or b.age >= ELDER_AGE:
         return False
     if a.social < MATE_SOCIAL or b.social < MATE_SOCIAL or a.rest > 0 or b.rest > 0:
+        return False
+    if a.expecting or b.expecting:
         return False
     if a.hunger < 40 or b.hunger < 40 or a.health < 50 or b.health < 50:
         return False
@@ -342,8 +434,11 @@ def _(w, a, b):
         _spend(p, COST_MATE)
         p.social = 0
         p.rest = MATE_COOLDOWN
-    child = w.spawn(a.x, a.y, 60, 70, 70, 0, 0)
-    w.events.append({"type": "birth", "npc": child.id, "parents": [a.id, b.id]})
+    # the child arrives later (see World.world_time); the one who asked carries it
+    a.expecting = GESTATION
+    a.partner = b.id
+    a.child_attrs = w.blend_attrs(a, b)
+    w.events.append({"type": "conceive", "npc": a.id, "target": b.id})
 
 
 # --- every declared action and option must be implemented -----------------------------

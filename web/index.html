@@ -11,7 +11,45 @@
     <section id="stage">
       <div id="game"></div>
       <div id="overlay" aria-hidden="true"></div>
+      <div id="minimap" title="The whole land. Click or drag to look elsewhere (M hides it)."><canvas id="minimap-canvas"></canvas></div>
       <div id="banner" hidden></div>
+      <div id="menu" hidden>
+        <div class="menu-card">
+          <h1>Project Genesis</h1>
+          <p class="menu-tag">A handful of people, a wild land, and whatever they make of it. Choose the land.</p>
+          <div id="menu-maps"></div>
+          <div class="menu-opts">
+            <label>Size <select id="menu-size"></select></label>
+            <label>Founders <input id="menu-pop" type="number" min="1" max="24" value="3"></label>
+            <label>Seed <input id="menu-seed" type="number" min="0"></label>
+            <button id="menu-dice" title="Another seed: the same kind of land, laid out differently">🎲</button>
+            <span class="menu-space"></span>
+            <button id="menu-cancel">Back</button>
+            <button id="menu-start" class="primary">Start</button>
+          </div>
+        </div>
+      </div>
+      <div id="player-bar" hidden>
+        <div class="pb-top">
+          <b>🎮 You are <span id="pb-name"></span></b>
+          <span id="pb-note"></span>
+          <span class="pb-space"></span>
+          <span class="hint">click the ground to walk · click someone to talk or hit · WASD steps</span>
+          <button id="pb-leave" title="Leave the body (Esc)">Leave body</button>
+        </div>
+        <div id="pb-heard" hidden>
+          <div id="pb-heard-line"></div>
+          <form id="pb-answer"><input id="pb-answer-text" maxlength="240" autocomplete="off" placeholder="Your answer…">
+            <button id="pb-say" type="submit">💬 Answer</button>
+            <button id="pb-yes" type="button" hidden>✅ Yes</button><button id="pb-no" type="button" hidden>❌ No</button></form>
+        </div>
+        <div id="pb-actions"></div>
+      </div>
+      <div id="interact" hidden>
+        <div class="ia-top"><span id="ia-head"></span><button id="ia-close" title="Close (Esc)">✕</button></div>
+        <form id="ia-say"><input id="ia-text" maxlength="240" autocomplete="off" placeholder="Say something… (they will answer)"><button>💬 Say</button></form>
+        <div id="ia-buttons"></div>
+      </div>
       <div id="timeline" title="Replay: the page records recent ticks. The live world keeps running while you watch.">
         <span id="tl-badge">⏪ REPLAY</span>
         <button id="tl-rev" title="Play backwards (shift+,)">◀◀</button>
@@ -41,13 +79,15 @@
         <button id="btn-step" title="Advance one tick">⏭</button>
         <label>Speed <input id="speed" type="range" min="50" max="1000" step="25"></label>
         <span id="speed-val"></span>
+        <button id="btn-sound" title="Sound: you hear whatever the villager you clicked is doing">🔊</button>
       </div>
       <div class="controls">
-        <label>Seed <input id="seed" type="number" min="0"></label>
-        <button id="btn-reset">New world</button>
+        <button id="btn-reset" title="Choose another land and start again">🌍 New world…</button>
+        <button id="btn-map" title="Show or hide the small map (M)">🗺️</button>
+        <span id="world-info" class="hint"></span>
       </div>
 
-      <div class="hint">Drag to pan · scroll to zoom · WASD / arrows · click an NPC to follow it</div>
+      <div class="hint">Drag to pan · scroll to zoom · WASD / arrows · click a villager to follow them and hear what they hear</div>
       <div class="hint">🏠 hut (home) · 🌾 farm · 🔥 campfire · 🪦 grave · ring colour under feet = temperament</div>
 
       <h2 class="row">Conversations
@@ -57,7 +97,19 @@
       <h2>Population</h2>
       <ul id="npc-list"></ul>
 
-      <div id="detail" hidden></div>
+      <div id="detail" hidden>
+        <div id="detail-head"></div>
+        <div id="god" hidden>
+          <div class="god-row">
+            <button id="btn-possess" title="Take over this villager: you decide what they do and say (Esc leaves)">🎮 Become them</button>
+            <button id="btn-heal" title="Heal them (health and energy)">❤️</button>
+            <button id="btn-feed" title="Feed them (full, and 3 food in hand)">🍖</button>
+            <button id="btn-smite" title="Strike them down with lightning">⚡</button>
+          </div>
+          <form id="say-form"><input id="say-text" maxlength="240" autocomplete="off"><button>Say</button></form>
+        </div>
+        <div id="detail-body"></div>
+      </div>
 
       <h2>Chronicle</h2>
       <ol id="log"></ol>
