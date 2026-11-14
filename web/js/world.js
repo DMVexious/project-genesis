@@ -11,6 +11,7 @@ import { menuOpen } from "./menu.js";
 import { drawMinimap } from "./minimap.js";
 import { clearObjects, flickerFires, renderObjects } from "./objects.js";
 import { select } from "./panel.js";
+import { villagerClick } from "./modes.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
 import { state } from "./state.js";
@@ -44,11 +45,10 @@ export class WorldScene extends Phaser.Scene {
     // can do with them). A click on the ground: while playing, walk there.
     this.input.on("gameobjectup", (p, obj) => {
       if (!drag || drag.moved || !obj.npcId) return;
-      if (playing() && obj.npcId !== state.possessed) {
-        const c = this.game.canvas.getBoundingClientRect(), s = document.getElementById("stage").getBoundingClientRect();
-        openInteract(obj.npcId, p.x * (c.width / this.scale.width) + c.left - s.left,
-                     p.y * (c.height / this.scale.height) + c.top - s.top);
-      } else select(obj.npcId);
+      const c = this.game.canvas.getBoundingClientRect(), s = document.getElementById("stage").getBoundingClientRect();
+      const sx = p.x * (c.width / this.scale.width) + c.left - s.left, sy = p.y * (c.height / this.scale.height) + c.top - s.top;
+      if (playing()) { if (obj.npcId !== state.possessed) openInteract(obj.npcId, sx, sy); }
+      else if (!villagerClick(obj.npcId, sx, sy)) select(obj.npcId);
     });
     this.input.on("pointerup", (p, over) => {
       if (drag && !drag.moved && !(over && over.length) && p.button === 0) {
@@ -61,7 +61,7 @@ export class WorldScene extends Phaser.Scene {
     // Scroll to zoom toward the cursor.
     this.input.on("wheel", (p, _objs, _dx, dy) => {
       const before = cam.getWorldPoint(p.x, p.y);
-      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.88 : 1.14), MIN_ZOOM, MAX_ZOOM));
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom * (dy > 0 ? 0.88 : 1.14), minZoom(this), MAX_ZOOM));
       cam.preRender();
       const after = cam.getWorldPoint(p.x, p.y);
       cam.scrollX += before.x - after.x;
@@ -70,6 +70,8 @@ export class WorldScene extends Phaser.Scene {
 
     // enableCapture=false: don't swallow keystrokes meant for the seed input
     this.keys = this.input.keyboard.addKeys("W,A,S,D,UP,DOWN,LEFT,RIGHT", false);
+    // a smaller window may now show more than the whole map: zoom back in so it can't
+    this.scale.on("resize", () => cam.setZoom(Math.max(cam.zoom, minZoom(this))));
     if (state.frame) render(state.frame);
   }
   update(t, dt) {
@@ -95,6 +97,12 @@ export class WorldScene extends Phaser.Scene {
 }
 
 export const MIN_ZOOM = 0.25, MAX_ZOOM = 4, START_ZOOM = 1.5;
+// The furthest out the camera may go: the map fills the whole view, never smaller.
+export function minZoom(sc) {
+  const f = state.frame, cam = sc.cameras.main;
+  if (!f || !f.width) return MIN_ZOOM;
+  return Math.max(MIN_ZOOM, cam.width / (f.width * TILE), cam.height / (f.height * TILE));
+}
 export const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: "game",
@@ -118,6 +126,7 @@ function syncWorld(sc, f) {
   const cam = sc.cameras.main;
   cam.stopFollow();
   cam.setBounds(0, 0, f.width * TILE, f.height * TILE);
+  cam.setZoom(Math.max(cam.zoom, minZoom(sc)));
   const center = (params.get("center") || "").split(",").map(Number);  // ?center=<tileX>,<tileY>
   const alive = f.npcs.filter((n) => n.alive);
   if (center.length === 2 && center.every(Number.isFinite)) {

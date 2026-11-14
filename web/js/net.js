@@ -2,6 +2,7 @@
 import { $, WS_URL, params } from "./config.js";
 import { closeMenu, menuOpen, onPreview, openMenu } from "./menu.js";
 import { focus, renderFeeds, renderPanel, select } from "./panel.js";
+import { helpOnFirstVisit, syncMode } from "./modes.js";
 import { renderPlayer } from "./play.js";
 import { record, resetView, updateTimeline } from "./replay.js";
 import { state } from "./state.js";
@@ -41,6 +42,7 @@ export function connect() {
       if (msg.menu && params.has("bare")) send({ cmd: "resume" });
       else if (msg.menu && !menuOpen()) openMenu(true);
       else if (!msg.menu && menuOpen() && $("menu-cancel").hidden) closeMenu();  // someone else pressed Start
+      if (!msg.menu && !params.has("bare")) helpOnFirstVisit();  // (once the world is under way)
     } else if (msg.type === "frame") {
       // the map changes on few ticks, so the server leaves out the parts we already have
       for (const part of ["tiles", "terrain"]) {
@@ -60,6 +62,7 @@ export function connect() {
       render(msg);
       const changed = renderPlayer(msg);
       if (changed) focus(state.possessed != null ? state.possessed : state.selected);  // the camera goes with the player
+      syncMode();
       renderPanel(msg);
       updateTimeline();
       if (params.has("follow") && state.selected === null && !state.followed) {  // ?follow=<npc id>

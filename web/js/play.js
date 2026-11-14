@@ -144,7 +144,7 @@ export function initPlay() {
     const b = e.target.closest("button[data-i]");
     if (b) order({ kind: "act", action: $("pb-actions").acts[Number(b.dataset.i)].action });
   });
-  $("pb-leave").onclick = () => send({ cmd: "release" });
+  $("pb-leave").onclick = () => send({ cmd: "release" });  // (the toolbar stays on 🎮 Play: click someone else to become them)
   $("ia-buttons").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-option]");
     if (b) doInteract(b.dataset.option);

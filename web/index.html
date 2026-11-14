@@ -11,6 +11,47 @@
     <section id="stage">
       <div id="game"></div>
       <div id="overlay" aria-hidden="true"></div>
+      <div id="modes">
+        <button data-mode="watch" title="Watch (1): click a villager to follow and inspect them">👁 Watch</button>
+        <button data-mode="god" title="God (2): click a villager to smite, heal, feed or speak to them">⚡ God</button>
+        <button data-mode="play" title="Play (3): click a villager to become them">🎮 Play</button>
+        <button id="btn-help" title="Controls (H)">❓</button>
+        <div id="mode-hint"></div>
+      </div>
+      <div id="godmenu" hidden>
+        <div class="ia-top"><span id="gm-head"></span><button id="gm-close" title="Close (Esc)">✕</button></div>
+        <div id="gm-buttons">
+          <button data-power="smite" class="fight">⚡ Smite</button>
+          <button data-power="heal">❤️ Heal</button>
+          <button data-power="feed">🍖 Feed</button>
+          <button data-power="become">🎮 Become them</button>
+        </div>
+        <form id="gm-say"><input id="gm-text" maxlength="240" autocomplete="off" placeholder="Speak to them from the sky…"><button>🗣️ Say</button></form>
+      </div>
+      <div id="help" hidden>
+        <div class="help-card">
+          <div class="ia-top"><h2>Controls</h2><button id="help-close">✕</button></div>
+          <p class="hint">Pick a mode in the bar at the top of the world (or press 1, 2, 3). H shows this again.</p>
+          <div class="help-cols">
+            <section><h3>👁 Watch <kbd>1</kbd></h3><ul>
+              <li>Drag, or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>, to move around; scroll to zoom</li>
+              <li>Click a villager to follow them and see their stats, skills and things</li>
+              <li><kbd>Space</kbd> pause · <kbd>M</kbd> minimap · <kbd>,</kbd> <kbd>.</kbd> replay</li>
+              <li>Click someone to hear what they're doing (🔊)</li></ul></section>
+            <section><h3>⚡ God <kbd>2</kbd></h3><ul>
+              <li>Click a villager to open the god menu</li>
+              <li>⚡ <b>Smite</b> them with lightning, ❤️ heal, 🍖 feed</li>
+              <li>Type in the box to <b>speak from the sky</b>: they always answer</li>
+              <li>🎮 <b>Become them</b> to take over their body</li></ul></section>
+            <section><h3>🎮 Play <kbd>3</kbd></h3><ul>
+              <li>Click a villager to become them</li>
+              <li>Click the ground to walk; click a tree or bush to chop or pick it; <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> take steps</li>
+              <li>Click someone to <b>talk</b> (type anything), <b>hit</b>, trade, give or court; they answer</li>
+              <li>When someone talks to you, answer in the box at the bottom</li>
+              <li>The bottom bar has what you can do where you stand · <kbd>Esc</kbd> leaves the body</li></ul></section>
+          </div>
+        </div>
+      </div>
       <div id="minimap" title="The whole land. Click or drag to look elsewhere (M hides it)."><canvas id="minimap-canvas"></canvas></div>
       <div id="banner" hidden></div>
       <div id="menu" hidden>
