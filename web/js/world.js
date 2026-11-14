@@ -10,6 +10,7 @@ import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
 import { drawMinimap } from "./minimap.js";
 import { clearObjects, flickerFires, renderObjects } from "./objects.js";
+import { clearVillages, renderVillages } from "./villages.js";
 import { select } from "./panel.js";
 import { villagerClick } from "./modes.js";
 import { groundClick, openInteract, playing } from "./play.js";
@@ -121,6 +122,7 @@ function syncWorld(sc, f) {
   if (state.worldKey === key) return;
   state.worldKey = key;
   clearObjects();
+  clearVillages();
   clearGround(sc);
   clearCull();
   const cam = sc.cameras.main;
@@ -359,6 +361,7 @@ export function render(f, opts = {}) {
   syncWorld(sc, f);
   buildGround(sc, f);
   renderObjects(sc, f, opts);
+  renderVillages(sc, f);
   if (opts.reverse) {
     state.graves = state.graves.filter((gr) => gr.tick <= f.tick || (gr.img.destroy(), false));
     clearBubbles();

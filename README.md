@@ -287,6 +287,29 @@ Times below are in units of world time (one unit every `decay_every` = 5 ticks).
 </details>
 
 <details>
+<summary><b>Villages, building and a land that changes</b></summary>
+
+* **Villages.** The founders' camp is the first village. Each village has a name, its people, land
+  around its hearth (wider as it builds) and a shared storehouse. Lighting a campfire far from every
+  other village founds a new one; building a home on another village's land means moving there.
+  The side panel lists every village, what it has built and stored, and how its people feel about
+  the others (😊 friendly, 😐 wary, 😠 hostile, from what they remember of each other).
+* **Homes limit growth.** A village has room for 4 by the fire plus 2 per hut and 4 per stone house;
+  no couple there has a child while it is full, so villages build as they grow.
+* **Building sites.** Bigger buildings go up as a site that takes several stretches of work; anyone
+  can help, and the practised and clever build faster.
+* **Buildings:** hut, stone house, farm, campfire, storehouse (put things in, take what you need),
+  well (crops and trees around it grow much faster), workshop (axes and pickaxes are made there)
+  and shrine (prayer brings peace; beliefs spread faster in a village that has one).
+* **Resources and tools.** Rocks are mined for stone and are gone after a few loads; fish are caught
+  at the water's edge (that stretch is fished out for a while); a bit of wood plants a sapling that
+  grows into a tree. A fishing rod, an axe or a pickaxe makes its work quicker and more fruitful.
+* **The land changes with use.** Grass and earth that are walked on enough wear into paths, which
+  stay; mined rock leaves clear land; planted saplings become woods.
+
+</details>
+
+<details>
 <summary><b>Attributes, skills and roles</b></summary>
 
 Everyone has five attributes from 1 to 10 (strength, agility, intelligence, endurance, charisma):

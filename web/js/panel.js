@@ -1,7 +1,8 @@
 /* The side panel: stats, population list, inspector, conversations, chronicle. */
-import { $, AGGRO_COLOR, MAX_TALKS, hex } from "./config.js";
+import { $, AGGRO_COLOR, MAX_TALKS, TILE, hex } from "./config.js";
 import { send } from "./net.js";
 import { playSelect } from "./sound.js";
+import { villageColor } from "./villages.js";
 import { state } from "./state.js";
 import { portrait } from "./textures.js";
 import { scene, stageOf } from "./world.js";
@@ -85,6 +86,38 @@ function roleOf(n) {
   return (n.role && skills[n.role]) || null;
 }
 
+// --- villages ----------------------------------------------------------------------------
+function villageOf(n) {
+  const v = state.frame && (state.frame.villages || []).find((x) => x.id === n.village);
+  return v ? `of ${esc(v.name)} · ` : "";
+}
+
+const FEELING = (r) => (r >= 5 ? ["😊", "friendly"] : r <= -3 ? ["😠", "hostile"] : ["😐", "wary"]);
+function villagesHtml(f) {
+  const vs = f.villages || [];
+  if (!vs.length) return `<div class="hint">No villages yet.</div>`;
+  const objs = (state.defs && state.defs.objects) || {}, items = (state.defs && state.defs.items) || {};
+  const nameOf = (id) => (vs.find((v) => String(v.id) === String(id)) || { name: "?" }).name;
+  return vs.map((v) => {
+    const color = "#" + villageColor(v.id).toString(16).padStart(6, "0");
+    const built = Object.entries(v.buildings).map(([k, n]) =>
+      `<span title="${esc((objs[k] && objs[k].label) || k)}">${(objs[k] && objs[k].emoji) || "🏠"}${n > 1 ? n : ""}</span>`).join(" ");
+    const store = Object.entries(v.stock || {}).filter(([, n]) => n > 0).map(([k, n]) =>
+      `${(items[k] && items[k].emoji) || ""}${n}`).join(" ");
+    const rel = Object.entries(v.relations || {}).map(([id, r]) => {
+      const [face, word] = FEELING(r);
+      return `<span title="${word}">${face} ${esc(nameOf(id))}</span>`;
+    }).join(" · ");
+    const full = v.people >= v.room;
+    return `<div class="village ${v.abandoned ? "gone" : ""}" data-x="${v.x}" data-y="${v.y}">
+      <div class="vh"><span class="dot" style="background:${color}"></span><b>${esc(v.name)}</b>
+        <span class="hint">${v.abandoned ? "abandoned" : `${v.people} people · homes for ${v.room}${full ? " (full)" : ""}`}</span></div>
+      ${v.abandoned ? "" : `<div class="vb">${built || '<span class="hint">nothing built yet</span>'}</div>
+      ${store ? `<div class="vs">📦 ${store}</div>` : ""}
+      ${rel ? `<div class="vr">${rel}</div>` : ""}`}</div>`;
+  }).join("");
+}
+
 // Strength, agility...: what they are made of. Partly inherited, built up by what they do.
 function attrCells(n) {
   const defs = (state.defs && state.defs.attrs) || {};
@@ -124,6 +157,7 @@ export function renderPanel(f) {
     (s.decisions ? `<div class="stack">decisions: 🧠 ${s.decisions.llm} · ⚡ ${s.decisions.reflex} · ↻ ${s.decisions.plan}</div>` : ""));
 
   renderList([...f.npcs].sort((a, b) => a.id - b.id));
+  setHtml($("villages"), villagesHtml(f));
 
   const sel = f.npcs.find((n) => n.id === state.selected);
   const det = $("detail");
@@ -141,7 +175,7 @@ export function renderPanel(f) {
         ${img ? `<img class="portrait" src="${img}" alt="">` : ""}
         <div>
           <h3>${esc(sel.name)} ${sel.status} ${sel.emoji}</h3>
-          <div class="role">${role ? `${role.emoji} ${esc(role.role)} · ` : ""}${sel.age} years old${stageOf(sel) === "adult" ? "" : ` (${esc(stageOf(sel))})`}</div>
+          <div class="role">${role ? `${role.emoji} ${esc(role.role)} · ` : ""}${villageOf(sel)}${sel.age} years old${stageOf(sel) === "adult" ? "" : ` (${esc(stageOf(sel))})`}</div>
           <div class="look">${esc(describeLook(sel.look))}</div>
         </div>
       </div>`;
@@ -260,6 +294,13 @@ function updateGod(sel) {
 }
 
 export function initGod() {
+  $("villages").addEventListener("click", (e) => {  // click a village: look at it
+    const v = e.target.closest(".village");
+    const sc = scene();
+    if (!v || !sc || !sc.cameras) return;
+    sc.cameras.main.stopFollow();
+    sc.cameras.main.pan((Number(v.dataset.x) + 0.5) * TILE, (Number(v.dataset.y) + 0.5) * TILE, 600, "Sine.easeInOut");
+  });
   $("btn-possess").onclick = () => {
     const id = state.selected;
     if (id == null) return;

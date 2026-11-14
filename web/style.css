@@ -314,3 +314,13 @@ body.playing #player-bar { box-shadow: 0 0 0 1px var(--accent), 0 6px 24px rgba(
 #pbc-form { display: flex; gap: 4px; }
 #pbc-form input { flex: 1; min-width: 0; background: #15110d; color: var(--ink); border: 1px solid #4a3d30;
   border-radius: 4px; padding: 4px 8px; font: inherit; font-size: 13px; }
+
+/* --- villages in the panel ------------------------------------------------- */
+#villages { display: flex; flex-direction: column; gap: 4px; }
+.village { background: var(--panel-2); border-radius: 4px; padding: 5px 8px; cursor: pointer; font-size: 12px; }
+.village:hover { outline: 1px solid var(--accent); }
+.village.gone { opacity: .5; }
+.village .vh { display: flex; align-items: center; gap: 6px; }
+.village .vh b { font-size: 13px; }
+.village .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.village .vb, .village .vs, .village .vr { margin-top: 2px; }

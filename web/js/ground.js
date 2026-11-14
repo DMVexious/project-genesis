@@ -18,7 +18,8 @@ export function clearGround(sc) {
   for (const key of g.textures) if (sc.textures.exists(key)) sc.textures.remove(key);
   g.images = [];
   g.textures = [];
-  g.key = "";
+  g.key = g.base = "";
+  g.rows = null;
 }
 
 function paintTile(ctx, src, at, x, y, px, py) {
@@ -52,16 +53,53 @@ function paintTile(ctx, src, at, x, y, px, py) {
 }
 
 // (Re)paint the ground if this frame's world or terrain is not the one on show.
+// Repaint only the blocks whose ground changed (a path worn, a pond dug), plus
+// their neighbours, whose edges may spill over into them.
+function patchGround(sc, f) {
+  const W = f.width, H = f.height, dirty = new Set();
+  for (let y = 0; y < H; y++) {
+    if (f.terrain[y] === g.rows[y]) continue;
+    const row = f.terrain[y], was = g.rows[y] || "";
+    for (let x = 0; x < W; x++) {
+      if (row[x] === was[x]) continue;
+      g.land[y][x] = terrainOf(row[x]);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const cx = Math.floor((x + dx) / CHUNK), cy = Math.floor((y + dy) / CHUNK);
+        if (cx >= 0 && cy >= 0 && cx * CHUNK < W && cy * CHUNK < H) dirty.add(`${cx * CHUNK}:${cy * CHUNK}`);
+      }
+    }
+  }
+  g.rows = f.terrain;
+  for (const k of dirty) {
+    const [x0, y0] = k.split(":").map(Number);
+    const tex = g.chunks.get(k);
+    if (!tex) continue;
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, tex.width, tex.height);
+    const x1 = Math.min(W, x0 + CHUNK), y1 = Math.min(H, y0 + CHUNK);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) paintTile(ctx, g.src, g.at, x, y, (x - x0) * TILE, (y - y0) * TILE);
+    tex.refresh();
+  }
+}
+
 export function buildGround(sc, f) {
-  const key = `${f.world}:${f.trev}:${f.width}x${f.height}`;
+  const base = `${f.world}:${f.width}x${f.height}`, key = `${base}:${f.trev}`;
   if (g.key === key) return false;
+  if (g.base === base && g.rows) {  // the same world, a little changed
+    g.key = key;
+    patchGround(sc, f);
+    return true;
+  }
   clearGround(sc);
   g.key = key;
+  g.base = base;
+  g.rows = f.terrain;
+  g.chunks = new Map();
   const W = f.width, H = f.height;
-  const land = f.terrain.map((row) => [...row].map(terrainOf));
-  const at = (x, y) => (x >= 0 && y >= 0 && x < W && y < H ? land[y][x] : null);
+  const land = g.land = f.terrain.map((row) => [...row].map(terrainOf));
+  const at = g.at = (x, y) => (x >= 0 && y >= 0 && x < W && y < H ? land[y][x] : null);
   const sources = new Map();
-  const src = (name) => {
+  const src = g.src = (name) => {
     let s = sources.get(name);
     if (!s) sources.set(name, (s = sc.textures.get(name).getSourceImage()));
     return s;
@@ -80,6 +118,7 @@ export function buildGround(sc, f) {
       const ctx = tex.getContext();
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) paintTile(ctx, src, at, x, y, (x - x0) * TILE, (y - y0) * TILE);
       tex.refresh();
+      g.chunks.set(`${x0}:${y0}`, tex);
       g.textures.push(name);
       g.images.push(track(sc.add.image(x0 * TILE, y0 * TILE, name).setOrigin(0).setDepth(-5), x0, y0));
     }

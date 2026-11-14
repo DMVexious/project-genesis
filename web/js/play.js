@@ -27,8 +27,16 @@ function shortLabel(a) {
   if (a.kind === "chop") return `${ICON.chop} Chop`;
   if (a.kind === "forage") return `${ICON.forage} Gather`;
   if (a.kind === "collect") return `${ICON.collect} Pick up`;
-  if (a.kind === "eat") return `${ICON.eat} Eat`;
   if (a.kind === "sleep") return `${ICON.sleep} Sleep`;
+  const item = (k) => (defs.items && defs.items[k] && defs.items[k].label) || k;
+  if (a.kind === "eat") return `${ICON.eat} Eat ${item(what)}`;
+  if (a.kind === "mine") return "⛏️ Mine";
+  if (a.kind === "fish") return "🎣 Fish";
+  if (a.kind === "plant") return "🌱 Plant";
+  if (a.kind === "construct") return `🔨 Help build (${a.action.progress}%)`;
+  if (a.kind === "deposit") return `📦 Store ${a.action.n} ${item(what)}`;
+  if (a.kind === "withdraw") return `📦 Take ${a.action.n} ${item(what)}`;
+  if (a.kind === "pray") return "🙏 Pray";
   return a.label;
 }
 

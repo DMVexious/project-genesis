@@ -5,10 +5,13 @@ import { $, TILE, params } from "./config.js";
 import { objectOf, terrainOf } from "./land.js";
 import { state } from "./state.js";
 import { tileHash } from "./textures.js";
+import { villageColor } from "./villages.js";
 import { scene } from "./world.js";
 
 const OBJECT_COLOR = { rock: "#7a7a82", tree: "#2c6a2e", bush: "#3f8a3a", fruit: "#c8463c", cactus: "#4f9a4a",
-                       mushroom: "#b8483c", hut: "#f0d27a", farm: "#f0cf5c", fire: "#ff8a2a" };
+                       mushroom: "#b8483c", hut: "#f0d27a", farm: "#f0cf5c", fire: "#ff8a2a", house: "#e8e0d0",
+                       storehouse: "#c8783a", well: "#7fd0f0", workshop: "#c09060", shrine: "#fff0b0",
+                       site: "#d9b47a", sapling: "#4c9a40" };
 const SPENT_COLOR = { tree: "#6d4825", farm: "#8a6a3c" };
 const rgb = (hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
 
@@ -65,6 +68,13 @@ export function drawMinimap() {
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(base, 0, 0, canvas.width, canvas.height);
+  for (const v of f.villages || []) {  // each village's hearth
+    if (v.abandoned) continue;
+    ctx.fillStyle = "#140e09";
+    ctx.fillRect(v.x * SCALE - 4, v.y * SCALE - 4, SCALE + 8, SCALE + 8);
+    ctx.fillStyle = "#" + villageColor(v.id).toString(16).padStart(6, "0");
+    ctx.fillRect(v.x * SCALE - 3, v.y * SCALE - 3, SCALE + 6, SCALE + 6);
+  }
   for (const n of f.npcs) {
     if (!n.alive) continue;
     ctx.fillStyle = "#140e09";

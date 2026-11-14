@@ -41,8 +41,9 @@ export const GROUND = {
   forest: { base: 0x456a30, dark: 0x3a5a29, light: 0x55793a },
   snow: { base: 0xe8eef2, dark: 0xd0dbe5, light: 0xffffff },
   peak: { base: 0x6f6a63, dark: 0x5c5852, light: 0x827d75 },
+  path: { base: 0xb0946a, dark: 0x9a7f58, light: 0xc4a87c },
 };
-export const VARIANTS = { sand: 3, dirt: 3, stone: 3, grass: 4, forest: 3, snow: 3, peak: 2 };  // "t_<kind><n>"
+export const VARIANTS = { sand: 3, dirt: 3, stone: 3, grass: 4, forest: 3, snow: 3, peak: 2, path: 3 };  // "t_<kind><n>"
 export const DETAILS = { sand: 3, dirt: 3, stone: 3, grass: 5, forest: 4, snow: 3, shallow: 3 };  // "d_<kind><n>"
 export const EDGE_VARIANTS = 2;
 const WATER_DEEP = 0x2f6f9f, WATER_SHALLOW = 0x9fdcea, FOAM = 0xeef9fd;
@@ -90,6 +91,10 @@ export function makeTextures(scene) {
       for (let i = 0; i < 4; i++) px(Math.floor(r() * 24), Math.floor(r() * 24), 1, 1, 0xffffff);
     },
     peak: (r) => { for (let i = 0; i < 5; i++) px(Math.floor(r() * 20), Math.floor(r() * 21), 4, 3, 0x514d48); },
+    path: (r, pal) => {  // packed earth: pebbles, and the odd footprint
+      for (let i = 0; i < 5; i++) px(Math.floor(r() * 22), Math.floor(r() * 22), 2, 1, 0x8a7350);
+      for (let i = 0; i < 2; i++) { const x = 3 + Math.floor(r() * 15), y = 3 + Math.floor(r() * 15); px(x, y, 2, 3, pal.dark); px(x + 4, y + 2, 2, 3, pal.dark); }
+    },
   };
   for (const [kind, pal] of Object.entries(GROUND)) {
     for (let v = 0; v < VARIANTS[kind]; v++) {
@@ -370,6 +375,53 @@ export function makeTextures(scene) {
   peak("peak1", 18, 10, 10);
   peak("peak2", 26, 8, 11);
 
+  // --- what villages build ------------------------------------------------------------
+  sprite("sapling", 14, 18, [[6, 9, 2, 8, 0x6d4825], [3, 3, 8, 6, 0x4c9a40]],
+    [[4, 3, 3, 2, 0x6ab85e], [8, 6, 2, 2, 0x3c7a32], [5, 16, 4, 1, 0x4a3018]]);
+
+  const STONE = 0x9a958a, STONE_DK = 0x77736a, STONE_HI = 0xb4afa3, WOOD = 0x8a5a32, WOOD_DK = 0x6b4424;
+  // a stone house: grey walls, a shingle roof, a chimney, warm windows
+  solids([[3, 18, 26, 16, STONE], [21, 3, 4, 10, STONE_DK]]);
+  for (let y = 20; y < 33; y += 4) for (let x = 3 + ((y / 4) % 2) * 3; x < 28; x += 6) px(x, y, 5, 3, STONE_HI);
+  tri(0, 20, 16, 4, 32, 20, OUTLINE); tri(2, 19, 16, 6, 30, 19, 0x5a3a26); tri(7, 17, 16, 9, 25, 17, 0x6d4a32);
+  px(21, 3, 4, 2, 0x4c4843);
+  px(13, 24, 6, 10, 0x3d2614); px(17, 29, 1, 1, 0xc89a62);
+  px(5, 23, 5, 5, 0xf3d27a); px(7, 23, 1, 5, 0x4a3220); px(22, 23, 5, 5, 0xf3d27a); px(24, 23, 1, 5, 0x4a3220);
+  px(3, 33, 26, 1, 0x4a4640);
+  save("house", 32, 36);
+  // a storehouse: a broad wooden barn with crates and sacks by the door
+  solids([[2, 14, 28, 15, WOOD], [24, 22, 6, 7, 0xa8763e]]);
+  for (let x = 4; x < 30; x += 4) px(x, 14, 1, 15, WOOD_DK);
+  tri(0, 16, 16, 3, 32, 16, OUTLINE); tri(2, 15, 16, 5, 30, 15, 0x8c3b26); tri(8, 13, 16, 8, 24, 13, 0xa34a31);
+  px(10, 18, 9, 11, 0x3d2614); px(14, 18, 1, 11, 0x2a1a0e);
+  px(25, 23, 4, 1, 0x6b4424); px(25, 26, 4, 1, 0x6b4424);
+  solids([[2, 24, 5, 5, 0xd8c8a0]]); px(3, 24, 3, 1, 0xb8a880);
+  save("storehouse", 32, 30);
+  // a well: a stone ring under a little roof, a bucket on a rope
+  solids([[3, 15, 16, 9, STONE], [4, 3, 2, 13, WOOD], [16, 3, 2, 13, WOOD]]);
+  px(5, 16, 12, 3, 0x2f6f9f); px(3, 19, 16, 1, STONE_DK); px(6, 21, 3, 2, STONE_HI); px(12, 21, 3, 2, STONE_HI);
+  tri(1, 5, 11, 0, 21, 5, 0x6d4825); px(10, 5, 1, 7, 0xcfc4a8); solids([[8, 11, 5, 4, 0x8a5a32]]);
+  save("well", 22, 26);
+  // a workshop: an open-sided shed, a workbench, an anvil, tools on the wall
+  solids([[2, 12, 3, 16, WOOD_DK], [27, 12, 3, 16, WOOD_DK], [6, 20, 12, 3, WOOD], [20, 21, 6, 4, 0x55555c]]);
+  tri(0, 13, 16, 2, 32, 13, OUTLINE); tri(1, 12, 16, 4, 31, 12, 0x6b4a2c); tri(8, 11, 16, 6, 24, 11, 0x7a5a36);
+  px(7, 23, 2, 5, WOOD_DK); px(15, 23, 2, 5, WOOD_DK); px(21, 25, 4, 3, 0x45454c); px(19, 21, 8, 1, 0x7a7a82);
+  px(9, 17, 1, 3, 0x7a5230); px(8, 16, 3, 1, 0xa8a8b0); px(13, 16, 1, 4, 0x7a5230); px(12, 15, 3, 2, 0x8a8a92);
+  px(2, 27, 28, 1, 0x4a3220);
+  save("workshop", 32, 30);
+  // a shrine: two stone posts and a lintel, with a glowing offering between
+  solids([[3, 10, 4, 22, STONE], [17, 10, 4, 22, STONE], [1, 6, 22, 4, STONE_HI]]);
+  px(1, 9, 22, 1, STONE_DK); px(4, 12, 1, 18, STONE_HI); px(18, 12, 1, 18, STONE_HI);
+  for (let r = 6; r >= 2; r--) { g.fillStyle(0xffe08a, 0.12); g.fillCircle(12, 25, r); }
+  solids([[9, 26, 6, 4, 0x8a8a90]]); px(11, 23, 2, 3, 0xffe08a); px(11, 22, 2, 1, 0xfff4c8);
+  save("shrine", 24, 34);
+  // a building site: a wooden frame going up, planks and stones waiting
+  solids([[4, 6, 2, 22, 0xb08850], [22, 6, 2, 22, 0xb08850], [13, 2, 2, 26, 0xb08850]]);
+  px(4, 10, 20, 2, 0xc89a62); px(4, 18, 20, 2, 0xc89a62); px(6, 12, 1, 6, 0x9a7444); px(20, 12, 1, 6, 0x9a7444);
+  solids([[1, 25, 9, 3, 0xd9b47a], [17, 24, 4, 4, STONE], [22, 25, 4, 3, STONE_DK]]);
+  px(1, 26, 9, 1, 0xb08a52);
+  save("site", 28, 30);
+
   // --- odds and ends --------------------------------------------------------------
   // Grave marker.
   px(5, 19, 14, 3, 0x5b4128); px(6, 18, 12, 1, 0x6d4f31);
@@ -403,6 +455,12 @@ export function makeTextures(scene) {
   solids([[2, 2, 9, 8, 0xb08a5c]]);                             // anything else: a tied bundle
   px(2, 5, 9, 1, 0x6b4a2c); px(6, 2, 1, 8, 0x6b4a2c);
   save("drop_other", 13, 12);
+  solids([[2, 5, 6, 5, 0x8a8a90], [7, 3, 6, 6, 0x9a9aa3]]);   // a few stones
+  px(8, 3, 3, 1, 0xc0c0c8); px(3, 5, 2, 1, 0xb0b0b8);
+  save("drop_stone", 15, 12);
+  solids([[2, 4, 10, 4, 0x6aa6d8], [11, 3, 3, 6, 0x5a96c8]]);   // a fish
+  px(3, 4, 8, 1, 0x9fd3ff); px(4, 5, 1, 1, OUTLINE);
+  save("drop_fish", 16, 11);
   g.destroy();
 }
 

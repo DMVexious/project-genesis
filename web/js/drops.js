@@ -4,7 +4,7 @@ import { TILE } from "./config.js";
 import { state } from "./state.js";
 
 const piles = new Map();  // "x,y" -> { img, label, bob, sig }
-const TEXTURES = ["wood", "food", "spear"];
+const TEXTURES = ["wood", "food", "spear", "stone", "fish"];
 
 const total = (items) => Object.values(items).reduce((a, n) => a + n, 0);
 // the picture shown is the item there is most of

@@ -5,6 +5,7 @@
 import { TILE } from "./config.js";
 import { track, untrack } from "./cull.js";
 import { objectOf, terrainOf } from "./land.js";
+import { state } from "./state.js";
 import { tileHash } from "./textures.js";
 
 function treeFor(ground, h) {
@@ -28,10 +29,18 @@ const LOOK = {
   hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}` },
   farm: { tex: () => "farm", spent: () => "farm_growing", flat: true },
   fire: { tex: () => "fire0", fire: true },
+  sapling: { tex: () => "sapling", sway: 3 },
+  house: { tex: () => "house" },
+  storehouse: { tex: () => "storehouse" },
+  well: { tex: () => "well" },
+  workshop: { tex: () => "workshop" },
+  shrine: { tex: () => "shrine" },
+  site: { tex: () => "site", site: true },
 };
 const UNKNOWN = { tex: () => "drop_other" };
 
-const objs = new Map();   // tile index -> { img, ch, key, x, y, home, glow }
+const objs = new Map();   // tile index -> { img, ch, key, x, y, home, glow, bar, label }
+let sites = new Set();    // building sites with a progress bar showing
 const fires = new Set();
 let shownKey = "", shownRows = null;
 
@@ -39,18 +48,21 @@ const picture = (look, o, ground, h) => (o.spent && look.spent ? look.spent(grou
 
 export function clearObjects() {
   for (const rec of objs.values()) {
+    dropSiteBar(rec);
     untrack(rec.img);
     rec.img.destroy();
     if (rec.glow) { untrack(rec.glow); rec.glow.destroy(); }
   }
   objs.clear();
   fires.clear();
+  sites = new Set();
   shownKey = "";
   shownRows = null;
 }
 
 function take(sc, i, rec, live) {
   objs.delete(i);
+  dropSiteBar(rec);
   fires.delete(rec);
   untrack(rec.img);
   if (rec.glow) { untrack(rec.glow); rec.glow.destroy(); }
@@ -126,6 +138,40 @@ export function renderObjects(sc, f, opts = {}) {
     }
   }
   shownRows = f.tiles;
+  updateSites(sc, f);
+}
+
+// Building sites show how far along they are, and what they will be.
+function updateSites(sc, f) {
+  const W = f.width, live = new Set();
+  for (const [x, y, what, progress] of f.sites || []) {
+    const rec = objs.get(y * W + x);
+    if (!rec || rec.key !== "site") continue;
+    live.add(rec);
+    if (!rec.bar) {
+      rec.bar = sc.add.graphics().setDepth(rec.img.depth + 1);
+      const place = (state.defs && state.defs.objects[what] && state.defs.objects[what].place) || what;
+      rec.label = sc.add.text(x * TILE + TILE / 2, y * TILE - 22, place, { fontFamily: "monospace", fontSize: "8px",
+        color: "#ffe9b8", stroke: "#140e09", strokeThickness: 3 }).setOrigin(0.5, 1).setResolution(3).setDepth(rec.img.depth + 1);
+      track(rec.bar, x, y);
+      track(rec.label, x, y);
+    }
+    if (rec.progress !== progress) {
+      rec.progress = progress;
+      const bx = x * TILE + 1, by = y * TILE - 20;
+      rec.bar.clear().fillStyle(0x140e09, 0.85).fillRect(bx, by, TILE - 2, 5)
+        .fillStyle(0xf0cf5c, 1).fillRect(bx + 1, by + 1, Math.round((TILE - 4) * progress / 100), 3);
+    }
+  }
+  for (const rec of sites) if (!live.has(rec)) dropSiteBar(rec);
+  sites = live;
+}
+
+function dropSiteBar(rec) {
+  if (!rec.bar) return;
+  untrack(rec.bar); untrack(rec.label);
+  rec.bar.destroy(); rec.label.destroy();
+  rec.bar = rec.label = null;
 }
 
 // Campfires flicker and their light breathes.

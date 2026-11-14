@@ -241,6 +241,42 @@ export function playFx(sc, events) {
         }
         break;
       }
+      case "mine": {
+        const c = tileCenter(e.x, e.y);
+        faceToward(s, c.x);
+        anim(sc, s, { swing: { from: 0, to: 1 }, angle: { from: 0, to: 14 * s.face } }, 100, { yoyo: true, ease: "Quad.in" });
+        sc.time.delayedCall(100, () => shakeTile(sc, e.x, e.y));
+        burst(sc, c.x, c.y + 4, [0x9a9aa3, 0xc0c0c8, 0xffe08a], 7, { delay: 100, spread: 12, up: 12 });
+        break;
+      }
+      case "fish": {
+        const c = tileCenter(e.x, e.y);
+        faceToward(s, c.x);
+        burst(sc, c.x, c.y, [0xdff3fb, 0x9fd3ff], 8, { spread: 10, up: 14, gravity: 30 });
+        if (e.caught) floatText(sc, s.tx, s.ty - 26 * s.base, `+${e.caught} fish`, "#9fe8ff", { size: 11, delay: 200 });
+        break;
+      }
+      case "plant": {
+        const c = tileCenter(e.x, e.y);
+        burst(sc, c.x, c.y + 4, [0x6ab85e, 0x8a6a3c], 6, { spread: 8, up: 8 });
+        break;
+      }
+      case "construct": {
+        const c = tileCenter(e.x, e.y);
+        anim(sc, s, { y: { from: 0, to: -3 }, swing: { from: 0, to: 0.7 } }, 90, { yoyo: true, repeat: 1 });
+        burst(sc, c.x, c.y + 6, [0xc8a46a, 0x9a8a78], 5, { spread: 12, up: 8 });
+        break;
+      }
+      case "built": {
+        const c = tileCenter(e.x, e.y);
+        burst(sc, c.x, c.y, [0xf0cf5c, 0xffffff, 0xc8a46a], 18, { spread: 22, up: 24, gravity: 16, dur: 900 });
+        const label = (state.defs && state.defs.objects[e.what] && state.defs.objects[e.what].label) || e.what;
+        floatText(sc, c.x, c.y - 20, `${label} built!`, "#ffe08a", { size: 11, rise: 24, dur: 1600, pop: true });
+        break;
+      }
+      case "pray":
+        floatText(sc, s.tx, s.ty - 28 * s.base, "✦", "#fff4c8", { size: 14, rise: 26, dur: 1600 });
+        break;
       case "levelup": {
         // a new level of a skill: a little jump, a shower of sparks, and what it was
         const d = (state.defs && state.defs.skills && state.defs.skills[e.skill]) || { label: e.skill };

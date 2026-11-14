@@ -104,6 +104,10 @@ const SOUNDS = {
     tone(2637, 0.35, { vol: 0.07, at: a + 0.3 });
   },
   attrup: (a = 0) => { tone(784, 0.14, { vol: 0.14, at: a }); tone(1175, 0.22, { vol: 0.14, at: a + 0.1 }); },
+  // a pick on stone
+  clink: (a = 0, v = 1) => { tone(1900, 0.08, { type: "square", vol: 0.1 * v, to: 1500, at: a }); noise(0.05, { vol: 0.25 * v, freq: 3500, q: 2, at: a }); },
+  // something going into the water
+  splash: (a = 0, v = 1) => { noise(0.35, { vol: 0.25 * v, freq: 1400, to: 500, q: 0.7, at: a }); },
   // an item jumping into your hands
   pop: (a = 0) => { tone(480, 0.09, { type: "triangle", vol: 0.22, to: 960, at: a }); },
   pluck: (a = 0) => { tone(520, 0.06, { vol: 0.16, to: 780, at: a }); },
@@ -174,8 +178,14 @@ export function playFrame(f) {
     const mine = e.npc === me.id, atMe = e.target === me.id;
     switch (e.type) {
       case "work":  // one swing of the tool while a job is under way
-        if (mine) play({ chop: "chop", forage: "forage", build: "build", eat: "eat", craft: "craft" }[e.kind] || "build", 0.1, 0.8);
+        if (mine) play({ chop: "chop", forage: "forage", build: "build", eat: "eat", craft: "craft", mine: "clink",
+                         construct: "build", fish: "splash", plant: "forage" }[e.kind] || "build", 0.1, 0.8);
         break;
+      case "mine": if (mine) { play("clink", 0.1); play("clink", 0.3); } break;
+      case "fish": if (mine) { play("splash", 0.05); if (e.caught) play("pop", 0.3); } break;
+      case "construct": if (mine) { play("build", 0.09); play("build", 0.29); } break;
+      case "built": if (mine) play("built", 0.2); break;
+      case "pray": if (mine) play("attrup", 0.1); break;
       case "chop": if (mine) { play("chop", 0.1); play("chop", 0.38); play("timber", 0.5); } break;
       case "forage": if (mine) { play("forage", 0.1); play("pluck", 0.3); } break;
       case "build": if (mine) { play("build", 0.09); play("build", 0.29); play("built", 0.55); } break;
