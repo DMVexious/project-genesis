@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from .defs import (ACTIONS, ATTR_AVERAGE, BUILDINGS, COST_ATTACK, COST_DEFEND, COST_MATE, DIRS, EAT_HUNGER, ELDER_AGE,
                    GESTATION, GOTO_BIT, GOTO_LIMIT, INTERACTIONS, ITEMS, MATE_COOLDOWN, MATE_PRIVACY, MATE_SOCIAL,
-                   MATURE_AGE, MAX_TARGETS, OBJECTS, POP_CAP, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
-                   TERRAIN, can_afford, harvest_yield, tire_rate, trade_terms)
+                   MATURE_AGE, MAX_TARGETS, OBJECTS, POP_LIMIT, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
+                   TERRAIN, EDIBLE, FISH_REGROW, KEEP_FOOD, TOOL_FOR, WATER, WORK_BASE, WORK_PER_LEVEL, can_afford,
+                   harvest_yield, tire_rate, trade_terms)
 from .path import build_site, scan
 from .world import cheb
 
@@ -111,7 +112,7 @@ def _(w, n, ctx):
 
 @runs("sleep")
 def _(w, n, act, opt):
-    near = [o.spec for o in w.adjacent_objs(n)]
+    near = [o.spec for o in w.adjacent_objs(n) if o.progress >= 100]
     gain = max([SLEEP_ENERGY] + [s.sleep_energy for s in near])
     heal = max([0] + [s.sleep_heal for s in near])
     n.energy = min(STAT_MAX, n.energy + gain)
@@ -122,17 +123,18 @@ def _(w, n, act, opt):
 
 @offers("eat")
 def _(w, n, ctx):
-    return [{"kind": "eat"}] if n.have("food") > 0 else []
+    return [{"kind": "eat", "what": k} for k in EDIBLE if n.have(k) > 0]
 
 
 @runs("eat")
 def _(w, n, act, opt):
-    if n.have("food") <= 0:
+    what = act.get("what", "food")
+    if what not in EDIBLE or n.have(what) <= 0:
         return w.fail(n, "eat")
-    n.give("food", -1)
-    bonus = max([0] + [o.spec.cook_bonus for o in w.adjacent_objs(n)])
-    n.hunger = min(STAT_MAX, n.hunger + EAT_HUNGER + bonus)
-    w.events.append({"type": "eat", "npc": n.id, "cooked": bonus > 0})
+    n.give(what, -1)
+    bonus = max([0] + [o.spec.cook_bonus for o in w.adjacent_objs(n) if o.progress >= 100])
+    n.hunger = min(STAT_MAX, n.hunger + ITEMS[what].food + bonus)
+    w.events.append({"type": "eat", "npc": n.id, "cooked": bonus > 0, "what": what})
 
 
 # --- harvesting ------------------------------------------------------------------
@@ -141,7 +143,8 @@ def _harvestable(w, n, kind):
     best = None
     for o in w.adjacent_objs(n):
         s = o.spec
-        if o.ripe and s.harvest == kind and (best is None or sum(s.gives.values()) > sum(best.spec.gives.values())):
+        if o.ripe and o.progress >= 100 and s.harvest == kind and (
+                best is None or sum(s.gives.values()) > sum(best.spec.gives.values())):
             best = o
     return best
 
@@ -149,7 +152,12 @@ def _harvestable(w, n, kind):
 def _offer_harvest(kind):
     def offer(w, n, ctx):
         o = _harvestable(w, n, kind)
-        return [{"kind": kind, "what": o.kind, "x": o.x, "y": o.y}] if o else []
+        if o is None:
+            return []
+        act = {"kind": kind, "what": o.kind, "x": o.x, "y": o.y}
+        if o.spec.uses:
+            act["left"] = o.spec.uses - o.data.get("used", 0)
+        return [act]
     return offer
 
 
@@ -161,6 +169,8 @@ def _run_harvest(kind):
             return w.fail(n, kind)
         w.harvest(o)
         gives = harvest_yield(o.spec, n.level(ACTIONS[kind].skill))  # (the practised get more out of it)
+        if kind in TOOL_FOR and n.have(TOOL_FOR[kind]):
+            gives = {item: amount + 1 for item, amount in gives.items()}  # (and the right tool)
         if o.spec.drops and w.passable(x, y):
             w.drop(x, y, gives, n.id)  # it falls where the thing stood; walk over to pick it up
         else:
@@ -172,7 +182,7 @@ def _run_harvest(kind):
     return run
 
 
-for _kind in ("chop", "forage"):
+for _kind in ("chop", "forage", "mine"):
     offers(_kind)(_offer_harvest(_kind))
     runs(_kind)(_run_harvest(_kind))
 
@@ -180,7 +190,7 @@ for _kind in ("chop", "forage"):
 # --- making things -----------------------------------------------------------------
 @offers("build")
 def _(w, n, ctx):
-    can = [b for b in BUILDINGS if can_afford(n.inv, b.cost)]
+    can = [b for b in BUILDINGS if can_afford(n.inv, b.cost) and b.key != "site"]
     if not can:
         return []
     site = build_site(w, n)
@@ -196,27 +206,203 @@ def _(w, n, act, opt):
     spec = OBJECTS.get(act["what"])
     if spec is None or not spec.cost or not can_afford(n.inv, spec.cost) or not w.free(x, y):
         return w.fail(n, "build")
-    o = w.place(spec.key, x, y, owner=n.id)
+    # Big buildings take more than one go: this lays the site and does a first
+    # stretch of work; anyone may come and help finish it (see "construct").
+    o = w.place(spec.key, x, y, owner=n.id, progress=0 if spec.work else 100)
     n.pay(spec.cost)
     _spend(n, spec.build_energy)
     w.train(n, "building", spec.build_ticks)  # (bigger jobs teach more)
     w.events.append({"type": "build", "npc": n.id, "what": spec.key, "x": x, "y": y, "obj": o.id})
+    if spec.work:
+        _work_on(w, n, o)
+    else:
+        w.finish(o, n.id)
 
 
-def _can_craft(n, r) -> bool:
+def _work_on(w, n, o):
+    """One stretch of work on a building site: the practised and clever do more."""
+    amount = WORK_BASE + WORK_PER_LEVEL * n.level("building") + 2 * (n.attrs["intelligence"] - ATTR_AVERAGE)
+    o.progress = min(100, o.progress + max(5, amount * 100 // o.spec.work))
+    o.data.setdefault("helpers", []).append(n.id) if n.id not in o.data.get("helpers", []) else None
+    if o.progress >= 100:
+        w.finish(o, n.id)
+    else:
+        w._refresh(w.idx(o.x, o.y))
+
+
+def _sites_beside(w, n):
+    return [o for o in w.adjacent_objs(n) if o.progress < 100]
+
+
+@offers("construct")
+def _(w, n, ctx):
+    return [{"kind": "construct", "what": o.kind, "x": o.x, "y": o.y, "progress": o.progress, "owner": o.owner}
+            for o in _sites_beside(w, n)]
+
+
+@runs("construct")
+def _(w, n, act, opt):
+    o = w.obj_at(act["x"], act["y"]) if w.inb(act["x"], act["y"]) else None
+    if o is None or o.progress >= 100 or abs(o.x - n.x) + abs(o.y - n.y) != 1:
+        return w.fail(n, "construct")
+    _spend(n, 6)
+    w.train(n, "building", ACTIONS["construct"].xp)
+    w.events.append({"type": "construct", "npc": n.id, "x": o.x, "y": o.y, "what": o.kind})
+    _work_on(w, n, o)
+
+
+# --- the water, the land ----------------------------------------------------------------
+def _water_beside(w, n):
+    """A stretch of water next to the NPC that still has fish in it, or None."""
+    for dx, dy in DIRS:
+        x, y = n.x + dx, n.y + dy
+        if w.inb(x, y) and w.terrain[w.idx(x, y)] in WATER and w.idx(x, y) not in w.fished:
+            return x, y
+    return None
+
+
+@offers("fish")
+def _(w, n, ctx):
+    spot = _water_beside(w, n)
+    return [{"kind": "fish", "x": spot[0], "y": spot[1]}] if spot and n.room("fish") > 0 else []
+
+
+@runs("fish")
+def _(w, n, act, opt):
+    x, y = act["x"], act["y"]
+    if not w.inb(x, y) or w.terrain[w.idx(x, y)] not in WATER or w.idx(x, y) in w.fished:
+        return w.fail(n, "fish")
+    chance = 35 + 6 * n.level("fishing") + (35 if n.have("rod") else 0)
+    caught = 0
+    if w.rng.below(100) < chance:
+        caught = 1 + (1 if w.rng.below(100) < 15 + 5 * n.level("fishing") else 0)
+        n.take("fish", caught)
+        w.fished[w.idx(x, y)] = FISH_REGROW  # (that stretch is fished out for a while)
+    _spend(n, 4)
+    w.train(n, "fishing", ACTIONS["fish"].xp)
+    w.events.append({"type": "fish", "npc": n.id, "x": x, "y": y, "caught": caught})
+
+
+def _plant_spot(w, n):
+    for dx, dy in DIRS:
+        x, y = n.x + dx, n.y + dy
+        if w.free(x, y) and TERRAIN[w.terrain[w.idx(x, y)]].fertile >= 0.5:
+            return x, y
+    return None
+
+
+@offers("plant")
+def _(w, n, ctx):
+    if n.have("wood") < 1:
+        return []
+    spot = _plant_spot(w, n)
+    return [{"kind": "plant", "x": spot[0], "y": spot[1]}] if spot else []
+
+
+@runs("plant")
+def _(w, n, act, opt):
+    x, y = act["x"], act["y"]
+    if n.have("wood") < 1 or not w.free(x, y) or abs(x - n.x) + abs(y - n.y) != 1:
+        return w.fail(n, "plant")
+    n.give("wood", -1)
+    w.place("sapling", x, y, owner=n.id)
+    _spend(n, 3)
+    w.train(n, "foraging", ACTIONS["plant"].xp)
+    w.events.append({"type": "plant", "npc": n.id, "x": x, "y": y})
+
+
+# --- the village's buildings ---------------------------------------------------------------
+def _beside(w, n, flag):
+    """A finished building beside the NPC with the given property (store, pray...)."""
+    return next((o for o in w.adjacent_objs(n) if o.progress >= 100 and getattr(o.spec, flag)), None)
+
+
+def _store_of(w, n):
+    """The village store the NPC stands at, if it is their village's (or they have none)."""
+    o = _beside(w, n, "store")
+    if o is None or o.village not in w.villages or n.village not in (-1, o.village):
+        return None
+    return w.villages[o.village]
+
+
+@offers("deposit")
+def _(w, n, ctx):
+    v = _store_of(w, n)
+    if v is None:
+        return []
+    out = []
+    for k, have in n.inv.items():
+        give = have - (KEEP_FOOD if ITEMS[k].food else 0)
+        if give > 0 and not ITEMS[k].tool and not ITEMS[k].damage:
+            out.append({"kind": "deposit", "what": k, "n": give})
+    return out
+
+
+@runs("deposit")
+def _(w, n, act, opt):
+    v = _store_of(w, n)
+    k = act["what"]
+    give = min(act["n"], n.have(k))
+    if v is None or give <= 0:
+        return w.fail(n, "deposit")
+    n.give(k, -give)
+    v.stock[k] = v.stock.get(k, 0) + give
+    w.events.append({"type": "deposit", "npc": n.id, "what": k, "n": give, "village": v.id})
+
+
+@offers("withdraw")
+def _(w, n, ctx):
+    v = _store_of(w, n)
+    if v is None:
+        return []
+    return [{"kind": "withdraw", "what": k, "n": min(have, n.room(k), 6)} for k, have in sorted(v.stock.items())
+            if have > 0 and n.room(k) > 0]
+
+
+@runs("withdraw")
+def _(w, n, act, opt):
+    v = _store_of(w, n)
+    k = act["what"]
+    take = min(act["n"], v.stock.get(k, 0) if v else 0, n.room(k))
+    if v is None or take <= 0:
+        return w.fail(n, "withdraw")
+    v.stock[k] -= take
+    if not v.stock[k]:
+        del v.stock[k]
+    n.give(k, take)
+    w.events.append({"type": "withdraw", "npc": n.id, "what": k, "n": take, "village": v.id})
+
+
+@offers("pray")
+def _(w, n, ctx):
+    return [{"kind": "pray"}] if _beside(w, n, "pray") else []
+
+
+@runs("pray")
+def _(w, n, act, opt):
+    if not _beside(w, n, "pray"):
+        return w.fail(n, "pray")
+    n.social = max(0, n.social - 25)  # (peace: less need for company)
+    n.health = min(STAT_MAX, n.health + 3)
+    w.events.append({"type": "pray", "npc": n.id})
+
+
+def _can_craft(n, r, w=None) -> bool:
     cap = ITEMS[r.key].cap
-    return can_afford(n.inv, r.cost) and not (cap and n.have(r.key) >= cap)
+    if not can_afford(n.inv, r.cost) or (cap and n.have(r.key) >= cap):
+        return False
+    return not r.at or (w is not None and any(o.kind == r.at and o.progress >= 100 for o in w.adjacent_objs(n)))
 
 
 @offers("craft")
 def _(w, n, ctx):
-    return [{"kind": "craft", "what": r.key} for r in RECIPES.values() if _can_craft(n, r)]
+    return [{"kind": "craft", "what": r.key} for r in RECIPES.values() if _can_craft(n, r, w)]
 
 
 @runs("craft")
 def _(w, n, act, opt):
     r = RECIPES.get(act["what"])
-    if r is None or not _can_craft(n, r):
+    if r is None or not _can_craft(n, r, w):
         return w.fail(n, "craft")
     n.pay(r.cost)
     n.give(r.key, 1)
@@ -419,8 +605,10 @@ def mate_ok(w, a, b) -> bool:
         return False
     if a.hunger < 40 or b.hunger < 40 or a.health < 50 or b.health < 50:
         return False
-    if len(w.npcs) >= POP_CAP:
+    if len(w.npcs) >= POP_LIMIT:
         return False
+    if a.village != -1 and len(w.members(a.village)) >= w.room(a.village):
+        return False  # no home for another one: the village must build first
     for o in w.npcs:
         if o.alive and o.id != a.id and o.id != b.id and cheb(o.x, o.y, a.x, a.y) <= MATE_PRIVACY:
             return False

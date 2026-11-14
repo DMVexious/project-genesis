@@ -41,6 +41,19 @@ MATE_PRIVACY = 1         # nobody else may be this close when two NPCs mate
 GESTATION = 40           # world-time units between conceiving and the birth
 SETTLE_RADIUS = 3        # the founders start within this many tiles of each other
 DROP_TTL = 300           # world-time units before things left on the ground rot away
+# villages
+VILLAGE_RADIUS = 7       # a village's land reaches this far from its hearth, plus a tile for every 3 buildings
+VILLAGE_MAX_RADIUS = 15
+VILLAGE_GAP = 20         # a hearth lit at least this far from every other village founds a new one
+BASE_ROOM = 4            # people a village can hold before it has any homes (they sleep by the fire)
+POP_LIMIT = 60           # the most people the whole world holds (for speed)
+# the land changes with use
+PATH_WEAR = 30           # footsteps that wear grass or earth into a path
+WEARABLE = frozenset({"grass", "forest", "dirt"})
+FISH_REGROW = 40         # world-time units before a fished-out stretch of water has fish again
+WORK_BASE = 30           # work one construction session does (out of a building's "work")
+WORK_PER_LEVEL = 7       # ...and how much more for each level of building skill
+KEEP_FOOD = 2            # food kept back when putting things in the village store
 ELDER_AGE = 60 * YEAR    # from here on, each unit of world time may be the last
 OLD_AGE_ODDS = 65000     # death chance per unit = (age - ELDER_AGE) / OLD_AGE_ODDS (most die at 70-80)
 
@@ -100,6 +113,8 @@ SKILLS: dict[str, SkillDef] = {s.key: s for s in (
              renown=1.1),
     SkillDef("speech", "Speech", "Talker", "💬", ("charisma", "intelligence"),
              "better at persuading, trading and courting", renown=0.6),
+    SkillDef("mining", "Mining", "Miner", "⛏️", ("strength", "endurance"), "mines faster and gets more stone"),
+    SkillDef("fishing", "Fishing", "Fisher", "🎣", ("agility", "intelligence"), "catches fish more often"),
 )}
 ROLE_LEVEL = 3                 # how good someone must be at their best skill to be known for it
 WALK_EXERCISE = 4              # every so many steps walked count toward agility
@@ -175,6 +190,8 @@ TERRAIN: dict[str, TerrainDef] = {t.key: t for t in (
     TerrainDef("stone", "_", "rocky ground", fertile=0.4, term=("∙", "37"), color="#8a8578"),
     TerrainDef("grass", ",", "grass", fertile=1.3, term=("„", "32"), color="#5f8f3c"),
     TerrainDef("forest", ";", "forest floor", fertile=1.15, term=("‥", "32;2"), color="#456a30"),
+    # (worn by feet: much-walked grass and earth turn into paths)
+    TerrainDef("path", "=", "path", fertile=0.3, term=("░", "33"), color="#b0946a"),
     TerrainDef("snow", "*", "snow", fertile=0.25, move_cost=2, term=("*", "97"), color="#e8eef2"),
     TerrainDef("peak", "^", "mountain", passable=False, buildable=False, fertile=0.0,
                term=("▲", "37;1"), color="#6f6a63"),
@@ -195,13 +212,22 @@ class ItemDef:
     value: int = 1             # what one is worth in a trade
     gift: int = 1              # how many change hands when it is given away
     damage: int = 0            # added to every hit while carried
+    food: int = 0              # how much fullness eating one gives (0 = not food)
+    tool: str = ""             # the action it makes quicker and better while carried
 
 
 ITEMS: dict[str, ItemDef] = {i.key: i for i in (
     ItemDef("wood", "wood", "🪵", cap=24, gift=2),
-    ItemDef("food", "food", "🍒", cap=12, value=2),
+    ItemDef("food", "food", "🍒", cap=12, value=2, food=30),
+    ItemDef("stone", "stone", "🪨", cap=16, value=2, gift=2),
+    ItemDef("fish", "fish", "🐟", cap=8, value=2, food=35),
     ItemDef("spear", "spear", "🗡️", cap=1, value=6, damage=12),
+    ItemDef("axe", "axe", "🪓", cap=1, value=5, tool="chop"),
+    ItemDef("pickaxe", "pickaxe", "⛏️", cap=1, value=5, tool="mine"),
+    ItemDef("rod", "fishing rod", "🎣", cap=1, value=4, tool="fish"),
 )}
+EDIBLE = tuple(k for k, i in ITEMS.items() if i.food)
+TOOL_FOR = {i.tool: i.key for i in ITEMS.values() if i.tool}  # action kind -> the tool for it
 
 
 def trade_terms(give: str, get: str) -> tuple[int, int]:
@@ -222,10 +248,14 @@ class RecipeDef:
     energy: int = 5
     ticks: int = 10
     why: str = ""
+    at: str = ""               # a building it must be made beside ("" = anywhere)
 
 
 RECIPES: dict[str, RecipeDef] = {r.key: r for r in (
     RecipeDef("spear", {"wood": 5}, why="stronger in fights"),
+    RecipeDef("rod", {"wood": 3}, why="catch fish far more often"),
+    RecipeDef("axe", {"wood": 3, "stone": 2}, why="chop faster and get more wood", at="workshop"),
+    RecipeDef("pickaxe", {"wood": 3, "stone": 3}, why="mine faster and get more stone", at="workshop"),
 )}
 
 
@@ -248,6 +278,8 @@ class ObjectDef:
     harvest_energy: int = 0
     regrow: int = 0            # world-time units until ripe again
     drops: bool = False        # the yield falls on the ground (to be picked up) instead of into the hands
+    uses: int = 0              # harvests before it is used up and gone (0 = it regrows instead)
+    grows_into: str = ""       # once ripe, it turns into this (a sapling into a tree)
     # building (empty cost = NPCs cannot build it)
     cost: dict = field(default_factory=dict)
     build_energy: int = 0
@@ -257,6 +289,12 @@ class ObjectDef:
     emoji: str = "🔨"
     stat: str = ""             # name of its counter in the stats panel
     home: bool = False         # an NPC's first one becomes its home
+    capacity: int = 0          # people it gives a home to (a village grows only as far as it has homes)
+    work: int = 0              # construction work it takes (0 = done at once); see WORK_BASE
+    hearth: bool = False       # lit far from any village, it founds a new one
+    water: bool = False        # counts as water for the crops around it (a well)
+    store: bool = False        # the village's shared store
+    pray: bool = False         # people can pray beside it
     # passive effects on an NPC standing next to it
     sleep_energy: int = 0
     sleep_heal: int = 0
@@ -268,7 +306,10 @@ class ObjectDef:
 
 
 OBJECTS: dict[str, ObjectDef] = {o.key: o for o in (
-    ObjectDef("rock", "a rock", "rock", "#", term=("▲", "90"), goto=False),
+    ObjectDef("rock", "a rock", "rock", "#", term=("▲", "90"),
+              harvest="mine", gives={"stone": 2}, harvest_energy=6, uses=3),
+    ObjectDef("sapling", "a sapling", "young tree", "t", blocks=False, spent_blocks=False, goto=False,
+              term=("ϒ", "32"), regrow=50, starts_spent=True, grows_into="tree"),
     ObjectDef("tree", "a tree", "tree", "T", "s", spent_blocks=False,
               term=("♣", "32"), spent_term=("‚", "33"),
               harvest="chop", gives={"wood": 4}, harvest_energy=5, regrow=60, drops=True),
@@ -286,21 +327,43 @@ OBJECTS: dict[str, ObjectDef] = {o.key: o for o in (
               term=("♧", "95"), spent_term=("♧", "90"),
               harvest="forage", gives={"food": 1}, harvest_energy=1, regrow=30),
     ObjectDef("hut", "a hut", "hut", "H", term=("⌂", "93"),
-              cost={"wood": 10}, build_energy=15, build_ticks=18,
-              why="becomes your home; best sleep and healing", emoji="🔨", stat="huts",
-              home=True, sleep_energy=35, sleep_heal=2),
+              cost={"wood": 10}, build_energy=15, build_ticks=18, work=90,
+              why="becomes your home (room for 2); good sleep and healing", emoji="🔨", stat="huts",
+              home=True, capacity=2, sleep_energy=35, sleep_heal=2),
+    ObjectDef("house", "a stone house", "stone house", "O", term=("⌂", "97"),
+              cost={"wood": 10, "stone": 10}, build_energy=18, build_ticks=18, work=180,
+              why="a sturdy home with room for a family of 4; the best sleep and healing", emoji="🏠",
+              stat="houses", home=True, capacity=4, sleep_energy=45, sleep_heal=4),
     ObjectDef("farm", "a farm", "farm", "F", "f",
               term=("❦", "92"), spent_term=("ᵥ", "32"),
               harvest="forage", gives={"food": 3}, harvest_energy=2, regrow=25,
-              cost={"wood": 6}, build_energy=8, build_ticks=12, starts_spent=True,
+              cost={"wood": 6}, build_energy=8, build_ticks=12, starts_spent=True, work=50,
               why="crops that regrow 3 food again and again", emoji="🌱", stat="farms"),
     ObjectDef("fire", "a campfire", "campfire", "C", term=("♨", "91"),
               cost={"wood": 3}, build_energy=4, build_ticks=7,
-              why="cooked meals fill more, warmer sleep, a gathering spot", emoji="🔥", stat="fires",
-              sleep_energy=28, cook_bonus=15),
+              why="cooked meals fill more, warmer sleep, a gathering spot; lit far from others, it starts a new "
+                  "village", emoji="🔥", stat="fires", sleep_energy=28, cook_bonus=15, hearth=True),
+    ObjectDef("storehouse", "a storehouse", "storehouse", "S", term=("▣", "33"),
+              cost={"wood": 12, "stone": 4}, build_energy=15, build_ticks=16, work=140,
+              why="the village's shared store: anyone can put things in and take what they need", emoji="📦",
+              stat="storehouses", store=True),
+    ObjectDef("well", "a well", "well", "W", term=("◎", "36"),
+              cost={"stone": 8}, build_energy=12, build_ticks=14, work=100,
+              why="water close by: crops and trees around it grow much faster", emoji="🪣", stat="wells", water=True),
+    ObjectDef("workshop", "a workshop", "workshop", "Y", term=("⚒", "33"),
+              cost={"wood": 10, "stone": 4}, build_energy=15, build_ticks=16, work=120,
+              why="where tools are made: axes and pickaxes", emoji="🛠️", stat="workshops"),
+    ObjectDef("shrine", "a shrine", "shrine", "&", term=("⛩", "95"),
+              cost={"wood": 4, "stone": 8}, build_energy=12, build_ticks=14, work=110,
+              why="a holy place: praying there brings peace, and beliefs spread around it", emoji="⛩️",
+              stat="shrines", pray=True),
+    # (not built as such: whatever is being built shows as a building site until it is finished)
+    ObjectDef("site", "a building site", "building site", "%", term=("▒", "33")),
 )}
+SITE = OBJECTS["site"]
 
 BUILDINGS: tuple[ObjectDef, ...] = tuple(o for o in OBJECTS.values() if o.cost)
+HOMES: tuple[ObjectDef, ...] = tuple(o for o in BUILDINGS if o.home)
 
 # Path-finding looks for the nearest of each kind of place worth walking to (see
 # path.scan). Each such glyph has a bit; every tile keeps a mask of the kinds it
@@ -343,7 +406,28 @@ def _d_harvest(a, names, me):
     gives = items_text(harvest_yield(o, skill_of(me, ACTIONS[a["kind"]].skill)))
     if o.drops:
         return f"Chop down the adjacent {o.place} (it drops {gives}: walk over it to pick it up)"
+    if a["kind"] == "mine":
+        left = a.get("left", o.uses)
+        return f"Break stone off the adjacent rock (+{gives}; {'the last of it' if left <= 1 else f'{left} loads left'})"
     return f"Gather from the adjacent {o.place} (+{gives})"
+
+
+def _d_eat(a, names, me):
+    what = a.get("what", "food")
+    return f"Eat {ITEMS[what].label} (you carry {me['inv'].get(what, 0)})"
+
+
+def _d_construct(a, names, me):
+    o = OBJECTS[a["what"]]
+    mine = " (your own)" if a.get("owner") == me.get("id") else ""
+    return f"Work on the {o.place} being built beside you{mine} ({a['progress']}% done)"
+
+
+def _d_store(a, names, me):
+    what, n = ITEMS[a["what"]].label, a["n"]
+    if a["kind"] == "deposit":
+        return f"Put {n} {what} in the village storehouse for everyone"
+    return f"Take {n} {what} from the village storehouse"
 
 
 def _d_collect(a, names, me):
@@ -366,7 +450,8 @@ def _d_build(a, names, me):
 
 def _d_craft(a, names, me):
     r = RECIPES[a["what"]]
-    return f"Craft a {ITEMS[r.key].label} (costs {cost_text(r.cost)}, {r.why})"
+    at = f", at the {OBJECTS[r.at].place}" if r.at else ""
+    return f"Craft a {ITEMS[r.key].label} (costs {cost_text(r.cost)}{at}; {r.why})"
 
 
 def _name(names, a):
@@ -376,11 +461,21 @@ def _name(names, a):
 ACTIONS: dict[str, ActionDef] = {a.kind: a for a in (
     # (order here is the order actions are offered in; "sleep" must stay first)
     ActionDef("sleep", 10, lambda a, names, me: "Sleep (restore energy)"),
-    ActionDef("eat", 4, lambda a, names, me: f"Eat food (you carry {me['inv'].get('food', 0)})", timed=True),
+    ActionDef("eat", 4, _d_eat, ident=("what",), timed=True),
     ActionDef("chop", 9, _d_harvest, timed=True, skill="woodcutting", xp=10, attr="strength"),
     ActionDef("forage", 6, _d_harvest, timed=True, skill="foraging", xp=5, attr="agility"),
+    ActionDef("mine", 10, _d_harvest, timed=True, skill="mining", xp=10, attr="strength"),
+    ActionDef("fish", 12, lambda a, names, me: "Fish in the water beside you (a fish or two, if they bite)",
+              timed=True, skill="fishing", xp=8, attr="agility"),
+    ActionDef("plant", 6, lambda a, names, me: "Plant a sapling beside you from a bit of wood (it grows into a tree)",
+              timed=True, skill="foraging", xp=3),
+    ActionDef("construct", 10, _d_construct, ident=("x", "y"), timed=True, skill="building", xp=10,
+              attr="intelligence"),
     ActionDef("build", 12, _d_build, ident=("what",), timed=True, skill="building", xp=14, attr="intelligence"),
     ActionDef("craft", 10, _d_craft, ident=("what",), timed=True, skill="crafting", xp=12, attr="intelligence"),
+    ActionDef("deposit", 3, _d_store, ident=("what",)),
+    ActionDef("withdraw", 3, _d_store, ident=("what",)),
+    ActionDef("pray", 8, lambda a, names, me: "Pray at the shrine (it brings peace of mind)", timed=True),
     ActionDef("interact", 7, lambda a, names, me: f"Interact with {_name(names, a)}", ident=("target",)),
     ActionDef("collect", 2, _d_collect, walk=True, attr="agility"),
     ActionDef("goto", 2, lambda a, names, me:
@@ -421,6 +516,8 @@ def speed_factor(stats: dict, act: dict) -> float:
         f /= 1 + 0.07 * skill_of(stats, d.skill)          # level 10: about 40% quicker
     if d.attr:
         f *= 1.15 - 0.03 * attr_of(stats, d.attr)         # 5 is average; 10: 15% quicker
+    if act["kind"] in TOOL_FOR and stats.get("inv", {}).get(TOOL_FOR[act["kind"]]):
+        f *= 0.7                                          # the right tool in hand
     return f
 
 
@@ -477,7 +574,9 @@ def option_text(option: str, mine: bool = True) -> str:
 # to the front end to be animated.
 EVENT_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "👶", "conceive": "❤️", "forage": "🍒",
                "eat": "🍖", "trade": "🤝", "gift": "🎁", "talk": "💬", "craft": "🗡️", "death": "💀",
-               "sleep": "", "drop": "", "pickup": "", "levelup": "⭐", "attrup": "⭐"}
+               "sleep": "", "drop": "", "pickup": "", "levelup": "⭐", "attrup": "⭐",
+               "mine": "⛏️", "fish": "🎣", "plant": "🌱", "construct": "🔨", "built": "🏗️", "deposit": "📦",
+               "withdraw": "📦", "pray": "🙏", "found": "🏘️", "path": ""}
 FX_EVENTS = frozenset(EVENT_EMOJI)
 
 

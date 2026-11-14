@@ -25,7 +25,7 @@ from .engine.defs import (ACTIONS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
 from .memory import Memory
-from .traits import (Genome, belief_text, make_name, random_genome, random_look, random_persona, splice,
+from .traits import (Genome, belief_text, make_name, make_village_name, random_genome, random_look, random_persona, splice,
                      splice_look, splice_persona, voice_text)
 
 log = logging.getLogger(__name__)
@@ -141,6 +141,9 @@ class Simulation:
         self.last_any_talk = -10**9                    # tick the latest conversation started
         self.talk_wait: dict[int, int] = {}            # ticks an NPC has waited for its turn to speak
         self.roles: dict[int, str] = {}                # what each NPC is known for (its best skill)
+        self.village_names: dict[int, str] = {}        # village id -> its name
+        self.village_rng = random.Random(self.cfg.seed * 7_919 + 3)
+        self.relations: dict[tuple[int, int], int] = {} # (village, other village) -> how its people feel (-/+)
         self.quiet: set[str] = set()                   # chronicle lines too small to be village news
         self._stats: dict[int, dict] = {}              # the living, by id, as of this tick
         # the player: who they have become (if anyone), what they told that body to do next,
@@ -187,8 +190,40 @@ class Simulation:
         home = self.homes.get(n["id"])
         dist = None if home is None else abs(home[0] - x0) + abs(home[1] - y0)
         ground = GROUND.get(self.state["terrain"][y0][x0], "")
+        village = self._village_info(n.get("village", -1))
+        if village:  # (how far from home they are: lighting a fire far away founds a new village)
+            village["dist"] = max(abs(village["x"] - x0), abs(village["y"] - y0))
         return NpcView(n["id"], m.name, m.genome, n, self.state["actions"].get(n["id"], []) if actions else [],
-                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona, ground)
+                       nearby.get("hut", 0), nearby, dist, n["age"] >= ELDER_AGE, m.persona, ground, village)
+
+    # --- villages -------------------------------------------------------------------
+    def village_name(self, vid: int) -> str:
+        if vid not in self.village_names:
+            self.village_names[vid] = make_village_name(self.village_rng, set(self.village_names.values()))
+        return self.village_names[vid]
+
+    def _village_info(self, vid: int) -> dict:
+        v = next((v for v in self.state.get("villages", []) if v["id"] == vid), None)
+        if v is None:
+            return {}
+        sites = [s[2] for s in self.state.get("sites", [])
+                 if max(abs(s[0] - v["x"]), abs(s[1] - v["y"])) <= v["radius"]]
+        return {"id": vid, "name": self.village_name(vid), "people": v["people"], "room": v["room"],
+                "store": v["stock"], "has": v["buildings"], "sites": sites, "x": v["x"], "y": v["y"],
+                "radius": v["radius"]}
+
+    def _update_relations(self):
+        """How each village's people feel about each other village's, from what they remember."""
+        people: dict[int, list[int]] = {}
+        for n in self.alive():
+            if n.get("village", -1) != -1:
+                people.setdefault(n["village"], []).append(n["id"])
+        self.relations = {}
+        for a, mine in people.items():
+            for b, theirs in people.items():
+                if a != b:
+                    total = sum(self.memory.grudge(i, j) for i in mine for j in theirs)
+                    self.relations[(a, b)] = round(total / max(1, len(mine)))
 
     # --- outside intervention -----------------------------------------------------
     def enqueue(self, cmd: dict):
@@ -377,6 +412,8 @@ class Simulation:
         for line in log_lines:
             if " talks to " not in line and line not in self.quiet:
                 self.news.append(line.lstrip(LOG_EMOJI + "️ ").strip())
+        if now % 50 == 0:
+            self._update_relations()
         if now % 10 == 0:  # embedding is costly; batch it (recall() flushes first anyway)
             self._flush_memory()
         return self._frame(lines, log_lines)
@@ -1130,14 +1167,41 @@ class Simulation:
                 out.extend(self._pass_on_home(a, nm))
             elif t == "build":
                 spec = OBJECTS[e["what"]]
+                if spec.work:  # a building site: the building comes later (see "built")
+                    out.append(f"🏗️ {nm(a)} starts building {spec.label}")
+                    self.quiet.add(out[-1])
+            elif t == "built":
+                spec, owner = OBJECTS[e["what"]], e.get("owner", a)
                 if spec.stat:
                     self.totals[spec.stat] += 1
-                if spec.home and a not in self.homes:
-                    self.homes[a] = (e["x"], e["y"])
-                    out.append(f"🏠 {nm(a)} builds a home at ({e['x']},{e['y']})")
+                helped = f" (finished by {nm(a)})" if owner != a and owner in self.meta and spec.work else ""
+                where = f" in {self.village_name(e['village'])}" if e.get("village", -1) != -1 else ""
+                if spec.home and owner in self.meta and owner not in self.homes:
+                    self.homes[owner] = (e["x"], e["y"])
+                    out.append(f"🏠 {nm(owner)} builds a home{where}{helped}")
                 else:
                     label = f"another {spec.place}" if spec.home else spec.label
-                    out.append(f"{spec.emoji} {nm(a)} builds {label} at ({e['x']},{e['y']})")
+                    out.append(f"{spec.emoji} {nm(owner)} builds {label}{where}{helped}")
+            elif t == "found":
+                name = self.village_name(e["village"])
+                if a in self.meta:
+                    out.append(f"🏘️ {nm(a)} founds the village of {name}")
+            elif t == "join":
+                out.append(f"🏘️ {nm(a)} settles in {self.village_name(e['village'])}")
+            elif t == "abandoned":
+                out.append(f"🏚️ {self.village_name(e['village'])} stands empty: everyone there is gone")
+            elif t == "fish" and e.get("caught"):
+                out.append(f"🎣 {nm(a)} catches {e['caught']} fish")
+                self.quiet.add(out[-1])
+            elif t == "deposit":
+                out.append(f"📦 {nm(a)} puts {e['n']} {ITEMS[e['what']].label} in the storehouse")
+                self.quiet.add(out[-1])
+            elif t == "withdraw":
+                out.append(f"📦 {nm(a)} takes {e['n']} {ITEMS[e['what']].label} from the storehouse")
+                self.quiet.add(out[-1])
+            elif t == "pray":
+                out.append(f"🙏 {nm(a)} prays at the shrine")
+                self.quiet.add(out[-1])
             elif t == "craft":
                 out.append(f"{nm(a)} crafts a {ITEMS[e['what']].label}")
             elif t == "sleep" and a not in self.homes and self.vacant:
@@ -1160,6 +1224,8 @@ class Simulation:
         chance *= 2 if self.meta[a].genome.social == "Charismatic" else 1
         chance *= 0.5 + 0.1 * attr_of(self._stats.get(a, {}), "charisma")  # (average charisma: x1)
         chance *= 0.25 if self.meta[b].genome.social == "Paranoid" else 1
+        vb = self._stats.get(b, {}).get("village", -1)  # a shrine in the village: beliefs spread faster
+        chance *= 1.6 if self._village_info(vb).get("has", {}).get("shrine") else 1
         if self.persona_rng.random() >= chance:
             return []
         pb["belief"] = pa["belief"]
@@ -1254,6 +1320,7 @@ class Simulation:
                 "expecting": round(100 * (1 - n["expecting"] / GESTATION)) if n["expecting"] else 0,
                 "look": m.look, "home": list(self.homes[nid]) if nid in self.homes else None,
                 "stage": "child" if n["age"] < MATURE_AGE else ("elder" if n["age"] >= ELDER_AGE else "adult"),
+                "village": n.get("village", -1),
             })
 
         dialogue = []
@@ -1298,6 +1365,10 @@ class Simulation:
             "brain": getattr(self.brain, "name", "?") + (" (paused: slow)" if self.llm_paused(tick) else ""),
             "map": self.cfg.map_name,
             "possessed": self.possessed, "player": self._player_frame(),
+            "sites": self.state.get("sites", []),
+            "villages": [{**v, "name": self.village_name(v["id"]),
+                          "relations": {str(b): r for (a, b), r in self.relations.items() if a == v["id"]}}
+                         for v in self.state.get("villages", [])],
             "memory": getattr(self.memory, "name", "?"),
         }
         self.last_frame = frame

@@ -43,6 +43,8 @@ class NpcView:
     elder: bool = False
     persona: dict = field(default_factory=dict)  # {"belief": i, "voice": j}, see traits.BELIEFS/VOICES
     ground: str = ""  # what they are standing on: "grass", "shallow water"...
+    # their village: {"name", "people", "room", "store": {item: n}, "has": {building: n}, "sites": n}
+    village: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -79,6 +81,20 @@ def role_name(stats: dict) -> str:
     return SKILLS[role].role.lower() if role else ""
 
 
+def village_text(vil: dict) -> dict:
+    """What a villager knows about their own village, for a prompt."""
+    out = {"name": vil.get("name", "?"), "people": vil.get("people", 0),
+           "homes_for": vil.get("room", 0),
+           "buildings": vil.get("has", {}) or "none yet"}
+    if vil.get("people", 0) >= vil.get("room", 0):
+        out["note"] = "no room for more children until someone builds another home"
+    if "storehouse" in vil.get("has", {}):
+        out["in_the_storehouse"] = vil.get("store", {}) or "nothing"
+    if vil.get("sites"):
+        out["being_built"] = vil["sites"]
+    return out
+
+
 def building_rules() -> str:
     """One sentence listing what can be built, straight from the content registry."""
     return "You decide what to build: " + "; ".join(
@@ -105,10 +121,13 @@ def action_prompt(v: NpcView, names: dict[int, str]) -> list[dict]:
                 **({"standing_on": v.ground} if v.ground else {})},
         "home": "none - you have no hut of your own" if v.home is None else f"your hut is about {v.home} tiles away",
         "rules": "Stats are 0-100. Fullness drops over time; at 0 you starve. Energy at 0 hurts you. "
-                 + building_rules() + " A felled tree drops its wood on the ground: walk over it to pick "
+                 + building_rules() + " Big buildings start as a building site that takes work to finish; "
+                 "anyone can help. A village can only have more children if it has homes for them. "
+                 "A felled tree drops its wood on the ground: walk over it to pick "
                  "it up before someone else does. What you do, you get better at: practice raises your "
                  "skills and slowly your attributes, for life. Everyone ages and dies one day.",
         "buildings_within_5_tiles": v.nearby or {"hut": v.huts_nearby},
+        **({"your_village": village_text(v.village)} if v.village else {"your_village": "none: you live alone"}),
         "valid_actions": {str(i): describe_action(a, names, s) for i, a in enumerate(v.actions)},
     }
     return [
@@ -485,7 +504,69 @@ def _(v, a):
 @scorer("eat")
 def _(v, a):
     h = v.stats["hunger"]
-    return 80 + (50 - h) if h < 55 else 0
+    return (80 + (50 - h) + (3 if a.get("what") == "fish" else 0)) if h < 55 else 0
+
+
+def has(v, kind: str) -> int:
+    """How many of a building their village has."""
+    return v.village.get("has", {}).get(kind, 0) if v.village else 0
+
+
+def wants_stone(v) -> bool:
+    """Would stone be of use to them? (for a stone house, a well, the storehouse, tools...)"""
+    if have(v.stats, "stone") >= 10:
+        return False
+    if v.home is not None:  # housed: stone for a stone house, tools, the village's buildings
+        return True
+    # (the homeless need wood for a hut first; stone only once the village is big enough to need it)
+    return v.village.get("people", 0) >= 5 and not (has(v, "storehouse") and has(v, "well"))
+
+
+@scorer("mine")
+def _(v, a):
+    return (32 + knack(v.stats, "mining", "strength")) if wants_stone(v) else 4
+
+
+@scorer("fish")
+def _(v, a):
+    s = v.stats
+    hungry = s["hunger"] < 60 and have(s, "food") + have(s, "fish") == 0
+    return (62 if hungry else 18) + knack(v.stats, "fishing") + (12 if have(s, "rod") else 0)
+
+
+@scorer("plant")
+def _(v, a):
+    return {"Visionary": 22, "Industrious": 10}.get(v.genome.work, 3)
+
+
+@scorer("construct")
+def _(v, a):
+    mine = a.get("owner") == v.id
+    base = 72 if mine else {"Industrious": 48, "Visionary": 44, "Lazy": 12}.get(v.genome.work, 32)
+    return base + knack(v.stats, "building", "intelligence") + (8 if v.genome.social == "Charismatic" else 0)
+
+
+@scorer("deposit")
+def _(v, a):
+    lots = {"wood": 12, "stone": 8, "food": 6, "fish": 4}.get(a["what"], 99)
+    if a["n"] < lots or stocked(v, a["what"], 200):
+        return 4
+    return 38 + {"Industrious": 12, "Lazy": -15}.get(v.genome.work, 0) + (8 if v.genome.social == "Charismatic" else 0)
+
+
+@scorer("withdraw")
+def _(v, a):
+    s = v.stats
+    if a["what"] in ("food", "fish"):
+        return 78 if s["hunger"] < 55 and have(s, "food") + have(s, "fish") == 0 else 3
+    if a["what"] in ("wood", "stone"):
+        return 26 if v.genome.work in ("Industrious", "Visionary") else 8
+    return 2
+
+
+@scorer("pray")
+def _(v, a):
+    return (34 if v.stats["social"] > 60 else 8) + (10 if v.genome.social == "Loner" else 0)
 
 
 def knack(stats: dict, skill: str = "", attr: str = "") -> float:
@@ -500,16 +581,26 @@ def _(v, a):
     return wants + (knack(v.stats, "foraging", "agility") if have(v.stats, "food") < 10 else 0)
 
 
+def stocked(v, item: str, plenty: int) -> bool:
+    """Whether their village store already has plenty of something (no sense piling up more)."""
+    return bool(v.village) and v.village.get("store", {}).get(item, 0) >= plenty
+
+
 @scorer("chop")
 def _(v, a):
-    return (35 if have(v.stats, "wood") < 12 else 5) + {"Industrious": 15, "Visionary": 10, "Lazy": -20}.get(
+    return (35 if have(v.stats, "wood") < 12 else 5) - (25 if stocked(v, "wood", 120) else 0) + {"Industrious": 15, "Visionary": 10, "Lazy": -20}.get(
         v.genome.work, 0) + (knack(v.stats, "woodcutting", "strength") if have(v.stats, "wood") < 20 else 0)
 
 
+def spare_room(v) -> int:
+    """Homes their village has to spare (beyond the people it has)."""
+    return v.village.get("room", 0) - v.village.get("people", 0) if v.village else 0
+
+
 def _build_hut(v, near):
-    if v.home is None:  # everyone wants a home of their own
-        return 60 + (15 if v.genome.work == "Visionary" else 0)
-    return 40 if v.genome.work == "Visionary" and near.get("hut", 0) < 4 else 2
+    if v.home is None:  # everyone wants a home of their own (unless plenty stand empty)
+        return (60 if spare_room(v) < 4 else 18) + (15 if v.genome.work == "Visionary" else 0)
+    return 2
 
 
 def _build_farm(v, near):
@@ -517,11 +608,52 @@ def _build_farm(v, near):
 
 
 def _build_fire(v, near):
-    return (30 + (15 if v.genome.social == "Charismatic" else 0)) if near.get("fire", 0) == 0 else 2
+    if near.get("fire", 0) or (v.village and has(v, "fire") * 4 >= v.village.get("people", 0) + 4):
+        return 2  # (one fire nearby, or enough for the village already)
+    if v.village and v.village.get("dist", 0) > v.village.get("radius", 99):
+        # Far from home, a fire would found a new village: only the restless do that,
+        # and only when home is getting crowded.
+        crowded = v.village.get("people", 0) >= 8
+        return 28 if crowded and (v.genome.social == "Loner" or v.genome.work == "Visionary") else 1
+    return 30 + (15 if v.genome.social == "Charismatic" else 0)
 
 
 # Buildings without an entry get a mild "worth having one nearby" score.
-BUILD_SCORERS = {"hut": _build_hut, "farm": _build_farm, "fire": _build_fire}
+def _build_house(v, near):
+    if v.home is None:
+        return 66
+    return 45 if v.genome.work in ("Visionary", "Industrious") else 22
+
+
+def _build_storehouse(v, near):
+    return (50 + (12 if v.genome.work == "Visionary" else 0)) if not has(v, "storehouse") and \
+        v.village.get("people", 0) >= 3 else 2
+
+
+def _build_well(v, near):
+    return 42 if not has(v, "well") and has(v, "farm") >= 2 else 3
+
+
+def _build_workshop(v, near):
+    return (40 + (10 if v.genome.work == "Industrious" else 0)) if not has(v, "workshop") else 2
+
+
+def _build_shrine(v, near):
+    return (30 + (15 if v.genome.social == "Charismatic" else 0)) if not has(v, "shrine") and \
+        v.village.get("people", 0) >= 4 else 2
+
+
+def _build_home_for_family(score_fn):
+    """Homes matter more when the village is full: no room, no children."""
+    def score(v, near):
+        full = v.village and spare_room(v) <= 0
+        return score_fn(v, near) + (30 if full else 0)
+    return score
+
+
+BUILD_SCORERS = {"hut": _build_home_for_family(_build_hut), "farm": _build_farm, "fire": _build_fire,
+                 "house": _build_home_for_family(_build_house), "storehouse": _build_storehouse,
+                 "well": _build_well, "workshop": _build_workshop, "shrine": _build_shrine}
 
 
 @scorer("build")
@@ -544,6 +676,7 @@ def _(v, a):
 
 def _goto_tree(v, a):
     wants = 30 + (20 if v.genome.work == "Industrious" else 0) if have(v.stats, "wood") < 15 else 5
+    wants = 5 if stocked(v, "wood", 120) and have(v.stats, "wood") >= 4 else wants
     return wants + (knack(v.stats, "woodcutting", "strength") if wants > 5 else 0) - a["dist"] / 2
 
 
@@ -564,8 +697,37 @@ def _goto_shelter(v, a):
     return (55 if v.stats["energy"] < 35 else 3) - a["dist"]
 
 
+def _goto_rock(v, a):
+    return (28 if wants_stone(v) else 2) - a["dist"] / 2
+
+
+def _goto_store(v, a):
+    s = v.stats
+    hungry = s["hunger"] < 55 and have(s, "food") + have(s, "fish") == 0
+    stocked = sum(v.village.get("store", {}).get(k, 0) for k in ("food", "fish")) if v.village else 0
+    if hungry and stocked:
+        return 72 - a["dist"]
+    lots = have(s, "wood") >= 14 or have(s, "stone") >= 10 or have(s, "food") >= 8
+    return (32 if lots else 2) - a["dist"] / 2
+
+
+def _goto_workshop(v, a):
+    s = v.stats
+    can = have(s, "wood") >= 3 and have(s, "stone") >= 2 and not (have(s, "axe") and have(s, "pickaxe"))
+    return (30 if can else 2) - a["dist"] / 2
+
+
+def _goto_shrine(v, a):
+    return (24 if v.stats["social"] > 60 else 2) - a["dist"] / 2
+
+
+def _goto_site(v, a):
+    return {"Industrious": 40, "Visionary": 36, "Lazy": 6}.get(v.genome.work, 24) - a["dist"] / 2
+
+
 GOTO_SCORERS = {"tree": _goto_tree, "bush": _goto_bush, "farm": _goto_farm, "fire": _goto_fire,
-                "hut": _goto_shelter}
+                "hut": _goto_shelter, "house": _goto_shelter, "rock": _goto_rock, "storehouse": _goto_store,
+                "workshop": _goto_workshop, "shrine": _goto_shrine, "site": _goto_site}
 
 
 @scorer("collect")

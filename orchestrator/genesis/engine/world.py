@@ -13,9 +13,10 @@ from __future__ import annotations
 from collections import Counter
 
 from . import mapgen
-from .defs import (ATTR_MAX, ATTR_MIN, ATTRS, DROP_TTL, ELDER_AGE, GOTO_BIT, ITEMS, MIN_FERTILITY, OBJECTS,
-                   OLD_AGE_ODDS, SKILL_MAX, SKILLS, START_AGE, STAT_MAX, TERRAIN, WALK_EXERCISE, WATER, WET_BONUS,
-                   WET_REACH, attr_need, learn_rate, skill_need)
+from .defs import (ATTR_MAX, ATTR_MIN, ATTRS, BASE_ROOM, DROP_TTL, ELDER_AGE, FISH_REGROW, GOTO_BIT, ITEMS,
+                   MIN_FERTILITY, OBJECTS, OLD_AGE_ODDS, PATH_WEAR, SITE, SKILL_MAX, SKILLS, START_AGE, STAT_MAX,
+                   TERRAIN, VILLAGE_GAP, VILLAGE_MAX_RADIUS, VILLAGE_RADIUS, WALK_EXERCISE, WATER, WEARABLE,
+                   WET_BONUS, WET_REACH, attr_need, learn_rate, skill_need)
 from .npc import Npc
 
 MASK64 = (1 << 64) - 1
@@ -112,6 +113,17 @@ def cheb(ax, ay, bx, by) -> int:
     return max(abs(ax - bx), abs(ay - by))
 
 
+class Village:
+    """A settlement: its hearth, the people who belong to it, and a shared store.
+    (Its name, and what its people think of other villages, live in the orchestrator.)"""
+    __slots__ = ("id", "x", "y", "founded", "founder", "stock", "abandoned")
+
+    def __init__(self, id_: int, x: int, y: int, founded: int, founder: int = -1):
+        self.id, self.x, self.y, self.founded, self.founder = id_, x, y, founded, founder
+        self.stock: dict[str, int] = {}     # what is in its storehouses
+        self.abandoned = False
+
+
 class World:
     def __init__(self, seed: int, width: int, height: int, npc_count: int, decay_every: int = 1,
                  map_name: str = mapgen.DEFAULT_MAP):
@@ -142,6 +154,10 @@ class World:
         self._rows: tuple[int, list[str]] = (-1, [])  # (rev, the tile view) and the same for terrain
         self._terrain_rows: tuple[int, list[str]] = (-1, [])
         self.timers: set[int] = set()                 # tile indices of objects that are regrowing
+        self.wear = bytearray(size)                   # footsteps on each tile (enough of them wear a path)
+        self.fished: dict[int, int] = {}              # fished-out water tile -> world-time units until fish return
+        self.villages: dict[int, Village] = {}
+        self.next_village = 1
         # things lying on the ground: tile index -> {"items": {item: n}, "by": npc id, "ttl": units}
         self.drops: dict[int, dict] = {}
         self.next_obj = 1
@@ -195,6 +211,8 @@ class World:
         o = self.objs.get(i)
         if o is None:
             return t.glyph, t.passable
+        if o.progress < 100:  # still being built
+            return SITE.glyph, False
         s = o.spec
         return (s.glyph if o.ripe or not s.spent_glyph else s.spent_glyph,
                 t.passable and not (s.blocks if o.ripe else s.spent_blocks))
@@ -259,30 +277,44 @@ class World:
         self._refresh(i)
 
     def fertility(self, x: int, y: int) -> float:
-        """How fast things grow at a tile: the ground itself, and better near water."""
+        """How fast things grow at a tile: the ground itself, and better near water
+        (a river, a pond, or a well: a well waters further, and better)."""
         w, h = self.w, self.h
         f = TERRAIN[self.terrain[y * w + x]].fertile
         if f <= 0:
             return 0.0
-        for yy in range(max(0, y - WET_REACH), min(h, y + WET_REACH + 1)):
+        bonus = 1.0
+        reach = WET_REACH + 2
+        for yy in range(max(0, y - reach), min(h, y + reach + 1)):
             row = yy * w
-            for xx in range(max(0, x - WET_REACH), min(w, x + WET_REACH + 1)):
-                if self.terrain[row + xx] in WATER:
-                    return f * WET_BONUS
-        return f
+            for xx in range(max(0, x - reach), min(w, x + reach + 1)):
+                o = self.objs.get(row + xx)
+                if o is not None and o.progress >= 100 and o.spec.water:
+                    bonus = max(bonus, WET_BONUS + 0.25)
+                elif abs(xx - x) <= WET_REACH and abs(yy - y) <= WET_REACH and self.terrain[row + xx] in WATER:
+                    bonus = max(bonus, WET_BONUS)
+        return f * bonus
 
     def grow_time(self, o: Obj) -> int:
         """World-time units for an object to ripen where it stands."""
         return max(1, round(o.spec.regrow / max(MIN_FERTILITY, self.fertility(o.x, o.y))))
 
-    def place(self, kind: str, x: int, y: int, ripe: bool | None = None, owner: int = -1) -> Obj:
-        """Put an object on a tile, replacing whatever stood there."""
+    def place(self, kind: str, x: int, y: int, ripe: bool | None = None, owner: int = -1,
+              progress: int = 100) -> Obj:
+        """Put an object on a tile, replacing whatever stood there. ``progress``
+        below 100 makes it a building site, which needs work to finish."""
         spec = OBJECTS[kind]
         i = self.idx(x, y)
         self.timers.discard(i)
         o = Obj(self.next_obj, kind, x, y, (not spec.starts_spent) if ripe is None else ripe, owner)
         self.next_obj += 1
+        o.progress = progress
+        v = self.village_at(x, y)
+        o.village = v.id if v is not None else -1
         self.objs[i] = o
+        if progress < 100:
+            self._refresh(i)
+            return o
         if not o.ripe and spec.regrow:
             o.timer = self.grow_time(o)
             self.timers.add(i)
@@ -298,8 +330,15 @@ class World:
         return o
 
     def harvest(self, o: Obj):
-        """Mark an object as harvested; it ripens again after its regrow time."""
+        """Mark an object as harvested; it ripens again after its regrow time
+        (or, if it can only be harvested so many times, it is gone when used up)."""
         i = self.idx(o.x, o.y)
+        if o.spec.uses:
+            o.data["used"] = o.data.get("used", 0) + 1
+            if o.data["used"] >= o.spec.uses:
+                self.remove(o.x, o.y)  # (mined out: the land is clear)
+                return
+            return
         o.ripe = False
         o.timer = self.grow_time(o) if o.spec.regrow else 0
         if o.timer:
@@ -356,6 +395,72 @@ class World:
         if not pile["items"]:
             del self.drops[i]
         return got
+
+    # --- villages ---------------------------------------------------------------
+    def found_village(self, x: int, y: int, founder: int = -1) -> Village:
+        v = Village(self.next_village, x, y, self.tick, founder)
+        self.next_village += 1
+        self.villages[v.id] = v
+        for o in self.objs.values():  # what already stands on its land is the village's now
+            if o.village == -1 and cheb(o.x, o.y, x, y) <= VILLAGE_RADIUS:
+                o.village = v.id
+        self.events.append({"type": "found", "village": v.id, "npc": founder, "x": x, "y": y})
+        return v
+
+    def radius(self, v: Village) -> int:
+        """How far a village's land reaches: it grows with every few buildings."""
+        built = sum(1 for o in self.objs.values() if o.village == v.id and o.spec.cost)
+        return min(VILLAGE_MAX_RADIUS, VILLAGE_RADIUS + built // 3)
+
+    def village_at(self, x: int, y: int) -> Village | None:
+        """The village whose land a tile is on (the nearest, where two meet)."""
+        best, best_d = None, None
+        for v in self.villages.values():
+            if v.abandoned:
+                continue
+            d = cheb(x, y, v.x, v.y)
+            if d <= self.radius(v) and (best_d is None or d < best_d):
+                best, best_d = v, d
+        return best
+
+    def members(self, vid: int) -> list[Npc]:
+        return [n for n in self.npcs if n.village == vid]
+
+    def room(self, vid: int) -> int:
+        """People a village has homes for (and a few who sleep by the fire)."""
+        return BASE_ROOM + sum(o.spec.capacity for o in self.objs.values()
+                               if o.village == vid and o.progress >= 100 and o.spec.home)
+
+    def join(self, n: Npc, vid: int):
+        if n.village == vid:
+            return
+        n.village = vid
+        self.events.append({"type": "join", "npc": n.id, "village": vid})
+
+    def has_building(self, vid: int, kind: str) -> bool:
+        return any(o.kind == kind and o.village == vid and o.progress >= 100 for o in self.objs.values())
+
+    def finish(self, o: Obj, by: int):
+        """A building site is done: the building stands and does what it does."""
+        o.progress = 100
+        spec = o.spec
+        i = self.idx(o.x, o.y)
+        if spec.starts_spent:  # (a farm is planted, not yet ripe)
+            o.ripe = False
+            o.timer = self.grow_time(o)
+            self.timers.add(i)
+        self._refresh(i)
+        self.events.append({"type": "built", "npc": by, "owner": o.owner, "what": o.kind, "x": o.x, "y": o.y,
+                            "obj": o.id, "village": o.village})
+        n = self.by_id.get(o.owner)
+        if spec.hearth and all(cheb(o.x, o.y, v.x, v.y) >= VILLAGE_GAP for v in self.villages.values()
+                               if not v.abandoned):
+            v = self.found_village(o.x, o.y, o.owner)  # a hearth far from anyone: a new village
+            o.village = v.id
+            if n is not None and n.alive:
+                self.join(n, v.id)
+        elif spec.home and n is not None and n.alive and o.village != -1 and n.village != o.village:
+            self.join(n, o.village)  # (a home on a village's land makes you one of them: you have moved)
 
     # --- NPCs -----------------------------------------------------------------
     def npc(self, id_) -> Npc | None:
@@ -420,6 +525,12 @@ class World:
             n.steps += 1
             if n.steps % WALK_EXERCISE == 0:
                 self.exercise(n, "agility", 1)
+            i = self.idx(n.x, n.y)
+            if self.terrain[i] in WEARABLE:  # feet wear grass and earth down into a path
+                self.wear[i] = min(255, self.wear[i] + 1)
+                if self.wear[i] >= PATH_WEAR:
+                    self.set_terrain(n.x, n.y, "path")
+                    self.events.append({"type": "path", "npc": n.id, "x": n.x, "y": n.y})
             if self.drops and self.idx(n.x, n.y) in self.drops:
                 self.pickup(n)  # walking over things picks them up
             return True
@@ -526,6 +637,7 @@ class World:
                     child = self.spawn(n.x, n.y, 60, 70, 70, 0, 0)
                     if n.child_attrs:
                         child.attrs = n.child_attrs
+                    child.village = n.village
                     n.child_attrs = None
                     self.events.append({"type": "birth", "npc": child.id, "parents": [n.id, n.partner]})
                     n.partner = -1
@@ -539,12 +651,30 @@ class World:
                 else:
                     o.ripe = True
                     self.timers.discard(i)
-                    self._refresh(i)
+                    if o.spec.grows_into:  # a sapling is a tree now
+                        self.place(o.spec.grows_into, o.x, o.y, owner=o.owner)
+                    else:
+                        self._refresh(i)
 
         for i in sorted(self.drops):
             self.drops[i]["ttl"] -= 1
             if self.drops[i]["ttl"] <= 0:
                 del self.drops[i]
+
+        for i in sorted(self.fished):
+            self.fished[i] -= 1
+            if self.fished[i] <= 0:
+                del self.fished[i]
+
+        if phase % 10 == 0:
+            alive = {n.village for n in self.npcs}
+            for v in self.villages.values():
+                if not v.abandoned and v.id not in alive:
+                    v.abandoned = True
+                    self.events.append({"type": "abandoned", "village": v.id, "npc": -1})
+            for i in range(len(self.wear)):  # unused paths slowly grow over (worn ground, not finished paths)
+                if self.wear[i] and self.terrain[i] != "path":
+                    self.wear[i] -= 1
 
     # --- outside intervention ---------------------------------------------------
     def apply(self, cmd: dict) -> bool:
@@ -594,6 +724,9 @@ class World:
         elif op == "kill" and n:
             self.kill(n, str(cmd.get("cause", "an act of god")))
             ok = True
+        elif op == "found" and self.inb(x, y):
+            self.found_village(x, y)
+            ok = True
         elif op == "control" and cmd.get("npc", -1) in self.by_id:
             if cmd.get("on", True) and n:
                 self.controlled.add(n.id)
@@ -617,6 +750,13 @@ class World:
             self._rows = (self.rev, ["".join(g[y * w:(y + 1) * w]) for y in range(self.h)])
         return self._rows[1]
 
+    def _buildings(self, vid: int) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for o in self.objs.values():
+            if o.village == vid and o.spec.cost and o.progress >= 100:
+                out[o.kind] = out.get(o.kind, 0) + 1
+        return out
+
     def terrain_rows(self) -> list[str]:
         """The ground alone, one string per row."""
         if self._terrain_rows[0] != self.trev:
@@ -631,6 +771,12 @@ class World:
             # the living, then anyone who died since the last step began
             "npcs": [n.to_json() for n in self.npcs] + [n.to_json() for n in self.died],
             "drops": [[i % self.w, i // self.w, dict(self.drops[i]["items"])] for i in sorted(self.drops)],
+            # what is being built: [x, y, what, percent done]
+            "sites": [[o.x, o.y, o.kind, o.progress] for o in self.objs.values() if o.progress < 100],
+            "villages": [{"id": v.id, "x": v.x, "y": v.y, "founded": v.founded, "founder": v.founder,
+                          "stock": dict(v.stock), "abandoned": v.abandoned, "radius": self.radius(v),
+                          "people": sum(1 for n in self.npcs if n.village == v.id), "room": self.room(v.id),
+                          "buildings": self._buildings(v.id)} for v in self.villages.values()],
             "actions": self.actions,
             "events": self.events,
         }

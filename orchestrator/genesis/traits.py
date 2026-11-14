@@ -73,6 +73,20 @@ def make_name(rng: random.Random, taken: set[str]) -> str:
     return f"Npc{len(taken)}"
 
 
+_VILLAGE_START = ["Ash", "Bram", "Cold", "Elder", "Fen", "Gold", "Hollow", "Iron", "Long", "Moss", "North",
+                  "Oak", "Red", "Stone", "Thorn", "Wild", "Willow", "Black", "Green", "Lark"]
+_VILLAGE_END = ["ford", "wick", "stead", "holm", "dale", "brook", "field", "hearth", "mere", "ridge", "wood",
+                "haven", "moor", "well", "barrow"]
+
+
+def make_village_name(rng: random.Random, taken: set[str]) -> str:
+    for _ in range(200):
+        name = rng.choice(_VILLAGE_START) + rng.choice(_VILLAGE_END)
+        if name not in taken:
+            return name
+    return f"Village {len(taken) + 1}"
+
+
 # --- Appearance ---------------------------------------------------------------
 # Looks are inherited like traits (50/50 per slot, same mutation rate) but never
 # reach the LLM: they exist so families visibly resemble each other.

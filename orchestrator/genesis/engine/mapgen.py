@@ -458,3 +458,7 @@ def settle(world, count: int):
         social = rng.below(50)
         age = START_AGE + (rng.below(9) - 2) * YEAR  # the founders are 18 to 26
         world.spawn(x, y, 100, hunger, energy, social, age).attrs = world.roll_attrs()
+    if world.npcs:  # the founders' camp is the first village
+        first = world.found_village(cx, cy, world.npcs[0].id)
+        for n in world.npcs:
+            n.village = first.id

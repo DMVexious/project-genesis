@@ -94,13 +94,24 @@ class EngineTests(unittest.TestCase):
         n.give("wood", 16)
         w.generate_all_actions()
         acts = w.actions[n.id]
-        self.assertEqual([a["what"] for a in acts if a["kind"] == "build"], [b.key for b in D.BUILDINGS])
+        self.assertEqual([a["what"] for a in acts if a["kind"] == "build"],
+                         [b.key for b in D.BUILDINGS if D.can_afford({"wood": 20}, b.cost)])  # (no stone yet)
         idx = next(i for i, a in enumerate(acts) if a.get("what") == "farm")
         site = (acts[idx]["x"], acts[idx]["y"])
         s = e.step({n.id: (idx, 0)})
         ev = s["events"][0]
         self.assertEqual((ev["type"], ev["npc"], ev["what"], ev["x"], ev["y"]), ("build", n.id, "farm", *site))
         farm = w.obj_at(*site)
+        # a farm takes more than one go: it is a building site until the work is done
+        self.assertLess(farm.progress, 100)
+        self.assertEqual(w.tile(*site), D.SITE.glyph)
+        self.assertEqual(s["sites"], [[site[0], site[1], "farm", farm.progress]])
+        while farm.progress < 100:
+            n.energy = 100
+            w.generate_all_actions()
+            work = next(i for i, a in enumerate(w.actions[n.id]) if a["kind"] == "construct")
+            s = e.step({n.id: (work, 0)})
+        self.assertIn("built", [ev["type"] for ev in s["events"]])
         self.assertEqual((farm.kind, farm.ripe, farm.owner), ("farm", False, n.id))
         self.assertEqual(w.tile(*site), D.OBJECTS["farm"].spent_glyph)
         self.assertEqual(n.have("wood"), 14)
@@ -949,6 +960,208 @@ class MapTests(unittest.TestCase):
             self.assertGreaterEqual(f["stats"]["population"], 3, name)  # nobody lost, and maybe a child or two
             self.assertEqual((f["map"], len(f["terrain"]), len(f["terrain"][0])), (name, 56, 80))
             self.assertEqual(f["start"], list(sim.engine.world.start))
+
+
+class VillageTests(unittest.TestCase):
+    """M2: villages, building sites, new resources and the land changing with use."""
+
+    def bare(self, w=20, h=14, people=1):
+        e = Engine()
+        e.init(2, w, h, people, 1)
+        world = e.world
+        for o in list(world.objs.values()):
+            world.remove(o.x, o.y)
+        for i, n in enumerate(world.npcs):
+            world.teleport(n, 3 + i * 2, 5)
+            n.hunger = n.energy = n.health = 100
+        world.generate_all_actions()
+        return e, world
+
+    def do(self, e, n, kind, **match):
+        w = e.world
+        w.generate_all_actions()
+        idx = next(i for i, a in enumerate(w.actions[n.id])
+                   if a["kind"] == kind and all(a.get(k) == v for k, v in match.items()))
+        n.energy = n.hunger = 100
+        return e.step({n.id: (idx, 0)})
+
+    def test_the_founders_live_in_a_village(self):
+        w = World(3, 60, 40, 3, 1, "valley")
+        self.assertEqual(len(w.villages), 1)
+        v = next(iter(w.villages.values()))
+        self.assertEqual({n.village for n in w.npcs}, {v.id})
+        self.assertEqual((v.x, v.y), w.start)
+        self.assertIs(w.village_at(v.x, v.y), v)
+        self.assertEqual(w.room(v.id), D.BASE_ROOM)
+        state = w.state()
+        self.assertEqual(state["villages"][0]["people"], 3)
+
+    def test_rocks_give_stone_until_they_are_gone(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        w.place("rock", n.x + 1, n.y)
+        for i in range(D.OBJECTS["rock"].uses):
+            self.assertIsNotNone(w.obj_at(n.x + 1, n.y))
+            self.do(e, n, "mine")
+        self.assertEqual(n.have("stone"), 2 * D.OBJECTS["rock"].uses)
+        self.assertIsNone(w.obj_at(n.x + 1, n.y))  # mined out: the land is clear
+        self.assertTrue(w.free(n.x + 1, n.y))
+
+    def test_fishing_and_eating_fish(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        w.set_terrain(n.x + 1, n.y, "shallow")
+        n.give("rod", 1)
+        caught = 0
+        for _ in range(12):
+            w.fished.clear()  # (fresh fish each try)
+            if n.room("fish") == 0:
+                break  # hands full
+            s = self.do(e, n, "fish")
+            caught += sum(ev.get("caught", 0) for ev in s["events"] if ev["type"] == "fish")
+        self.assertGreater(caught, 0)
+        self.assertEqual(n.have("fish"), min(caught, n.cap("fish")))
+        n.hunger = 10
+        w.generate_all_actions()
+        eat = next(i for i, a in enumerate(w.actions[n.id]) if a["kind"] == "eat" and a["what"] == "fish")
+        e.step({n.id: (eat, 0)})
+        self.assertGreaterEqual(n.hunger, 10 + D.ITEMS["fish"].food - 1)
+
+    def test_a_planted_sapling_grows_into_a_tree(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        n.give("wood", 2)
+        self.do(e, n, "plant")
+        spot = next((o.x, o.y) for o in w.objs.values() if o.kind == "sapling")
+        self.assertEqual(n.have("wood"), 1)
+        for _ in range(int(D.OBJECTS["sapling"].regrow / D.MIN_FERTILITY) + 5):
+            w.world_time(1)
+            n.hunger = n.energy = 100
+        self.assertEqual(w.obj_at(*spot).kind, "tree")
+        self.assertTrue(w.obj_at(*spot).ripe)
+
+    def test_many_hands_build_faster(self):
+        e, w = self.bare(people=2)
+        a, b = w.npcs
+        w.teleport(b, a.x + 2, a.y)
+        a.give("wood", 10)
+        a.give("stone", 10)
+        self.do(e, a, "build", what="house")
+        house = next(o for o in w.objs.values() if o.kind == "house")
+        x, y = house.x, house.y
+        for n in (a, b):  # both stand beside the site
+            spot = next((x + dx, y + dy) for dx, dy in D.DIRS if w.passable(x + dx, y + dy)
+                        and not w.occupied(x + dx, y + dy))
+            w.teleport(n, *spot)
+        rounds = 0
+        while house.progress < 100:
+            w.generate_all_actions()
+            choices = {}
+            for n in (a, b):
+                n.energy = n.hunger = 100
+                idx = next(i for i, act in enumerate(w.actions[n.id]) if act["kind"] == "construct")
+                choices[n.id] = (idx, 0)
+            e.step(choices)
+            rounds += 1
+        self.assertLessEqual(rounds, 3)
+        self.assertEqual(w.tile(x, y), D.OBJECTS["house"].glyph)
+        self.assertEqual(w.room(a.village), D.BASE_ROOM + D.OBJECTS["house"].capacity)
+
+    def test_homes_limit_how_far_a_village_grows(self):
+        e, w = self.bare(people=2)
+        a, b = w.npcs
+        w.found_village(a.x, a.y)
+        vid = max(w.villages)
+        for n in (a, b):
+            n.village = vid
+            n.age, n.social, n.hunger, n.health = D.START_AGE, 100, 100, 100
+        w.teleport(b, a.x, a.y)
+        for i in range(D.BASE_ROOM - 2):  # fill the room it has with others
+            w.spawn(10 + i, 10, 100, 80, 80, 0, D.START_AGE).village = vid
+        self.assertFalse(A.mate_ok(w, a, b))  # full: no room for a child
+        w.place("hut", a.x + 5, a.y + 3).village = vid
+        self.assertTrue(A.mate_ok(w, a, b))  # a new home makes room
+
+    def test_the_village_store(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        w.found_village(n.x, n.y)
+        vid = max(w.villages)
+        n.village = vid
+        w.place("storehouse", n.x + 1, n.y)
+        n.give("wood", 20)
+        n.give("food", 5)
+        s = self.do(e, n, "deposit", what="wood")
+        self.assertEqual((n.have("wood"), w.villages[vid].stock["wood"]), (0, 20))
+        self.do(e, n, "deposit", what="food")
+        self.assertEqual(n.have("food"), D.KEEP_FOOD)  # (keeps a little to eat)
+        self.do(e, n, "withdraw", what="wood")
+        self.assertEqual(n.have("wood"), 6)
+        self.assertEqual(s["villages"][-1]["stock"], {"wood": 20})
+
+    def test_tools_are_made_at_a_workshop(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        n.give("wood", 6)
+        n.give("stone", 4)
+        w.generate_all_actions()
+        self.assertNotIn("axe", [a.get("what") for a in w.actions[n.id] if a["kind"] == "craft"])
+        w.place("workshop", n.x + 1, n.y)
+        self.do(e, n, "craft", what="axe")
+        self.assertEqual(n.have("axe"), 1)
+        tree = (n.x, n.y - 1)
+        w.place("tree", *tree)
+        self.assertLess(D.speed_factor(n.to_json(), {"kind": "chop"}), D.speed_factor({}, {"kind": "chop"}))
+        s = self.do(e, n, "chop")
+        self.assertEqual(s["drops"][0][2]["wood"], D.OBJECTS["tree"].gives["wood"] + 1)  # (the axe gets more out)
+
+    def test_feet_wear_paths(self):
+        e, w = self.bare()
+        n = w.npcs[0]
+        x, y = n.x, n.y
+        w.set_terrain(x + 1, y, "grass")
+        for _ in range(D.PATH_WEAR):
+            w.move(n, 1, 0)
+            w.move(n, -1, 0)
+        self.assertEqual(w.terrain[w.idx(x + 1, y)], "path")
+        self.assertIn(D.TERRAIN["path"].glyph, w.terrain_rows()[y])
+
+    def test_a_hearth_far_away_founds_a_new_village(self):
+        e, w = self.bare(w=60, h=20, people=2)
+        a, b = w.npcs
+        w.found_village(a.x, a.y)
+        home = max(w.villages)
+        a.village = b.village = home
+        w.teleport(b, 50, 10)
+        b.give("wood", 5)
+        s = self.do(e, b, "build", what="fire")
+        founded = [ev for ev in s["events"] if ev["type"] == "found"]
+        self.assertEqual(len(founded), 1)
+        self.assertNotEqual(b.village, home)
+        self.assertEqual(w.village_at(50, 10).id, b.village)
+        # and a campfire at home founds nothing
+        a.give("wood", 5)
+        s = self.do(e, a, "build", what="fire")
+        self.assertFalse([ev for ev in s["events"] if ev["type"] == "found"])
+
+    def test_a_well_waters_the_fields(self):
+        e, w = self.bare()
+        before = w.fertility(10, 10)
+        w.place("well", 12, 10)
+        self.assertGreater(w.fertility(10, 10), before)
+
+    def test_villages_grow_in_the_sim(self):
+        async def go():
+            sim = Simulation(Engine(), HeuristicBrain(3), SimpleMemory(), SimConfig(seed=3))
+            for _ in range(4000):
+                f = await sim.tick()
+            return sim, f
+        sim, f = asyncio.run(go())
+        v = f["villages"][0]
+        self.assertTrue(v["name"])
+        self.assertGreater(sum(v["buildings"].values()), 3)
+        lines = " ".join(line for line in sim.news)
+        self.assertTrue(any(n["village"] == v["id"] for n in f["npcs"]))
 
 
 class PlayerTests(unittest.TestCase):
