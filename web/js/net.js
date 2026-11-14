@@ -1,6 +1,6 @@
 /* The WebSocket to the orchestrator. */
 import { $, WS_URL, params } from "./config.js";
-import { closeMenu, menuOpen, onPreview, openMenu } from "./menu.js";
+import { closeMenu, menuOpen, onPreview, openMenu, showModels } from "./menu.js";
 import { focus, renderFeeds, renderPanel, select } from "./panel.js";
 import { helpOnFirstVisit, syncMode } from "./modes.js";
 import { renderPlayer } from "./play.js";
@@ -29,6 +29,7 @@ export function connect() {
       onPreview(msg);
     } else if (msg.type === "control") {
       state.control = msg;
+      showModels();
       state.paused = msg.paused;
       state.tickMs = msg.tick_ms;
       state.seed = msg.seed;

@@ -79,10 +79,8 @@ class Actions(dict):
         return acts
 
     def get(self, nid, default=None):
-        try:
-            return self[nid]
-        except KeyError:
-            return default
+        n = self.world.by_id.get(nid)
+        return self[nid] if n is not None and n.alive else default
 
     def all(self) -> dict:
         """Everyone's actions, as a plain dict."""

@@ -77,10 +77,38 @@ export function openMenu(first = false) {
   }
   m.open = true;
   m.first = first;
+  send({ cmd: "models" });  // (re-read what Ollama has: a model may have been pulled since)
+  showModels();
   $("menu-cancel").hidden = first;
   $("menu").hidden = false;
   mark();
   preview();
+}
+
+// --- which LLMs villagers think and talk with -------------------------------------------
+function modelOptions(sel, installed, current, extra) {
+  const names = [...extra, ...installed];
+  if (current && !names.includes(current)) names.push(current);
+  sel.innerHTML = names.map((n) => {
+    const [v, label] = Array.isArray(n) ? n : [n, n];
+    return `<option value="${v}"${v === current ? " selected" : ""}>${label}</option>`;
+  }).join("");
+}
+
+export function showModels() {
+  const ms = state.control && state.control.models;
+  if (!ms || !m.open) return;
+  modelOptions($("menu-think"), ms.installed, ms.think, [["heuristic", "none (rules only)"]]);
+  modelOptions($("menu-talk"), ms.installed, ms.talk, [["heuristic", "none (canned lines)"]]);
+  $("menu-bestof").value = String(ms.best_of || 1);
+  const busy = !!ms.switching;
+  for (const id of ["menu-think", "menu-talk", "menu-bestof"]) $(id).disabled = busy;
+  $("menu-models-note").textContent = busy ? "loading model…" :
+    ms.installed.length ? "" : "Ollama isn't running: villagers use rules and canned lines.";
+}
+
+function changeModels(key, value) {
+  send({ cmd: "models", [key]: key === "best_of" ? Number(value) : value });
 }
 
 export function closeMenu() {
@@ -99,6 +127,9 @@ export function initMenu() {
   $("menu-seed").oninput = preview;
   $("menu-dice").onclick = () => { $("menu-seed").value = Math.floor(Math.random() * 1e6); preview(); };
   $("menu-cancel").onclick = closeMenu;
+  $("menu-think").onchange = (e) => changeModels("think", e.target.value);
+  $("menu-talk").onchange = (e) => changeModels("talk", e.target.value);
+  $("menu-bestof").onchange = (e) => changeModels("best_of", e.target.value);
   $("menu-start").onclick = () => { send({ cmd: "reset", ...options() }); closeMenu(); };
   document.addEventListener("keydown", (e) => {
     if (!m.open) return;

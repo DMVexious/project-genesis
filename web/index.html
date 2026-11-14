@@ -68,6 +68,15 @@
             <button id="menu-cancel">Back</button>
             <button id="menu-start" class="primary">Start</button>
           </div>
+          <div class="menu-opts menu-models" title="Local AI models (Ollama). Changes apply at once, even mid-game.">
+            <label title="Decides what every villager does, many times a second: small and fast is best">🧠 Thinking
+              <select id="menu-think"></select></label>
+            <label title="Writes what you read: your conversations, the voice from the sky, villagers speaking to you">💬 Talking
+              <select id="menu-talk"></select></label>
+            <label title="Lines the talking model writes at once for each one it says; the best is kept">Best of
+              <select id="menu-bestof"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+            <span id="menu-models-note" class="hint"></span>
+          </div>
         </div>
       </div>
       <div id="player-bar" hidden>

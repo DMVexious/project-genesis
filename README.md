@@ -161,6 +161,30 @@ Ollama compiles to a grammar: `{"action": <enum of valid indices>}`,
 `{"option": <enum of engine options>, "line": str}`, `{"agree": bool}`.
 Note: `OLLAMA_NUM_PARALLEL` gave no speed-up with bonsai-2:2b on an RTX 5060 (0.30 s/call serial vs 0.32 s at 4-way), so leave it at the default.
 
+**Two models: one to think, one to talk.** Villagers decide hundreds of times a minute, so a
+tiny model does that. What *you* read (your conversations while playing as someone, the voice
+from the sky, villagers speaking to you) is rare, so a bigger model writes it:
+
+```
+--talk-model auto            # default: the first installed of gemma4:mini, gemma3:4b, qwen3:4b, llama3.2:3b...
+                             # "same" = the --model one; or any Ollama name (env GENESIS_TALK_MODEL)
+--best-of 3                  # lines written at once for each one said; the best is kept
+```
+
+Each line the talk model says is written `--best-of` times at once and scored. Lines that are
+bland, parrot what you said, repeat earlier lines or get cut off score low, and lines on your
+topic that answer your question score high. The talk model answers in plain text (gemma4 ignores
+`think: false` when its output is forced into JSON). On an RTX 5060, gemma4:mini takes about 2 s per
+reply at best-of-3. Both models can be switched mid-game from the start screen ("New world…",
+the 🧠 Thinking / 💬 Talking row).
+
+Leave `OLLAMA_NUM_PARALLEL` unset on a single laptop GPU. Measured on an RTX 5060 with 8 villagers
+and both models loaded, 4 slots made the game *worse*: sky answers took 17–23 s instead of 3–7 s,
+your chat replies averaged 6.3 s instead of 4.2 s, and villagers made 64 LLM decisions instead of 111.
+The villager model takes over the GPU and the talking model waits behind it. Every request asks for a
+4,096-token context (`NUM_CTX` in brain.py): with Ollama's default 32k per slot, the two models
+didn't fit together and kept evicting each other.
+
 **Hybrid cognition.** Each NPC decision comes from one of three sources, shown in the UI:
 
 * 🧠 **LLM:** when someone new is adjacent (a social moment), plus a goal check every `--llm-every` ticks (default 18). At most `--llm-budget` decision calls in flight at once (default 2), social moments first and then the most overdue. Separately, at most 3 conversations (`talk_budget`) use the LLM at once, and each NPC waits ~90 ticks (`talk_cooldown`) between conversations it starts. An NPC that can't get an LLM slot does something else instead of talking, so **every line is written by the LLM**. Pre-written lines are only used when the LLM is down or paused for being slow, and an LLM call that fails mid-conversation stays silent.

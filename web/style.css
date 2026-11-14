@@ -225,6 +225,8 @@ h2 .toggle { text-transform: none; letter-spacing: 0; font-size: 11px; cursor: p
 .menu-opts select { background: var(--panel-2); color: var(--ink); border: 1px solid #4a3d30; border-radius: 4px; padding: 3px 6px; font: inherit; }
 .menu-opts input[type=number] { width: 86px; }
 .menu-space { flex: 1; }
+.menu-models { margin-top: 8px; padding-top: 10px; border-top: 1px solid #4a3d30; }
+.menu-models select { max-width: 220px; }
 button.primary { background: var(--accent); color: #1d1712; border-color: var(--accent); font-weight: 700; padding: 6px 22px; }
 button.primary:hover { filter: brightness(1.08); }
 #world-info { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

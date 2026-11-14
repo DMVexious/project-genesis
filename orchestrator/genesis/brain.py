@@ -279,14 +279,20 @@ def reply_prompt(ix: Interaction, heard: str, option: str) -> list[dict]:
     ]
 
 
-def chat_prompt(ix: Interaction, history: list[tuple[str, str]], json_turns: bool = False) -> list[dict]:
+LEAVE_TAG = "[bye]"
+
+
+def chat_prompt(ix: Interaction, history: list[tuple[str, str]], json_turns: bool = False,
+                plain: bool = False) -> list[dict]:
     """``ix.me`` is chatting with ``ix.other`` and it is their turn. ``history`` is the
     conversation so far as (name, line), oldest first; the last line is the other's.
 
     The conversation goes in as real chat turns (their lines as the user, ours as
     the assistant): small models follow a back-and-forth far better that way than
     from a list inside one message. ``json_turns`` writes our own past turns in the
-    JSON shape the answer must take (for backends that force JSON output)."""
+    JSON shape the answer must take (for backends that force JSON output); ``plain``
+    asks for the bare line, ending in LEAVE_TAG to walk away (for models that answer
+    best without any forced format)."""
     me, other = ix.me, ix.other
     them = f"{other.name}, {'an elder' if other.elder else 'a kid' if other.stats.get('age', 99) < MATURE_AGE else 'a grown-up'}"
     if role_name(other.stats):
@@ -301,11 +307,12 @@ def chat_prompt(ix: Interaction, history: list[tuple[str, str]], json_turns: boo
               "say something new each time, ask them things back. Never repeat a line you already said. "
               f"Keep each line short and casual (under {MAX_WORDS} words). "
               "When you want to end it (bored, busy, hungry, tired, upset, or it has run its course), say a "
-              "goodbye and choose leave; otherwise choose stay.")
+              + (f"goodbye and put {LEAVE_TAG} at the very end of your line. Reply with only the words you say."
+                 if plain else "goodbye and choose leave; otherwise choose stay."))
     messages = [{"role": "system", "content": system}]
     for who, said in history:
         if who == me.name:
-            content = json.dumps({"line": said, "leave": False}) if json_turns else f"stay | {said}"
+            content = said if plain else json.dumps({"line": said, "leave": False}) if json_turns else f"stay | {said}"
             messages.append({"role": "assistant", "content": content})
         else:
             messages.append({"role": "user", "content": said})
@@ -385,6 +392,50 @@ def repeats(line: str, earlier: list[str]) -> bool:
     """Whether a line says again what one of ``earlier`` already said."""
     tri, low = _trigrams(line), line.strip().lower()
     return any(low == e.strip().lower() or (tri and len(tri & _trigrams(e)) * 2 >= len(tri)) for e in earlier)
+
+
+_STOP = {"the", "and", "you", "your", "that", "this", "with", "what", "have", "just", "about", "they", "them",
+         "yeah", "it's", "i'm", "don't", "gonna", "really", "there", "here", "some", "been", "were", "was", "are"}
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 3 and w not in _STOP}
+
+
+def line_score(line: str, heard: str = "", mine: list[str] = (), own_belief: int = -1) -> float:
+    """How good a candidate spoken line is (higher is better), for picking the best
+    of several written at once. Unusable output scores -inf."""
+    try:
+        line = spoken(line)
+    except Exception:
+        return float("-inf")
+    score = 0.0
+    if is_generic(line, own_belief):
+        score -= 5
+    if mine and repeats(line, list(mine)):
+        score -= 6
+    n = len(line.split())
+    score -= 0 if 3 <= n <= 12 else 1.5   # a grunt or a speech both read badly
+    if line.endswith("…"):
+        score -= 2                       # cut off mid-sentence
+    if heard:
+        if _trigrams(heard) and len(_trigrams(line) & _trigrams(heard)) * 2 >= len(_trigrams(line) or {0}):
+            score -= 3                   # parrots what they just heard
+        elif _content_words(line) & _content_words(heard):
+            score += 1                   # on the subject they raised
+        if heard.rstrip().endswith("?") and not line.rstrip().endswith("?"):
+            score += 0.5                 # (a question deserves an answer, not another question)
+    return score
+
+
+def plain_line(text: str, name: str = "") -> tuple[str, bool]:
+    """A line from a model answering in free text: the first real line, without a
+    "Name:" prefix or quotes. Returns (line, whether it ends with LEAVE_TAG)."""
+    leave = LEAVE_TAG in text.lower() or "[leave]" in text.lower()
+    text = re.sub(r"\[(?:bye|leave)\]", " ", text, flags=re.I)
+    first = next((ln for ln in text.splitlines() if re.search(r"[A-Za-z]{2,}", ln)), "")
+    first = re.sub(r"^\s*\**" + (re.escape(name) if name else r"[A-Z][a-z]+") + r"\**\s*:\s*", "", first)
+    return first.strip().strip('"“”').strip(), leave
 
 
 class Canned(str):
@@ -1003,32 +1054,40 @@ class LlamaBrain:
             self._failed("action", e)
             return self.fallback.pick_action(v)
 
-    async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
-        try:
-            for _ in range(2):  # one retry if the line comes out bland
-                out = await self._complete(interaction_prompt(ix), interaction_grammar(ix.options), 48,
-                                           self.talk_temperature)
-                option, _, line = out.partition("|")
-                option = option.strip()
-                if option not in ix.options:
-                    raise ValueError(f"bad option {option!r}")
-                if not is_generic(line, ix.me.persona.get("belief", -1)):
-                    break
-            return option, spoken(line)
-        except Exception as e:
-            self._failed("interaction", e)
-            return await self.fallback.choose_interaction(ix)
+    # --- speech ---
+    # Every spoken line is written ``best_of`` times at once (the server batches them, so
+    # this costs about as long as writing one) and the best by ``line_score`` is kept. If
+    # even the best is bland or a repeat, one more round is tried.
 
-    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
-        try:
-            for _ in range(2):
-                out = await self._complete(reply_prompt(ix, heard, option), REPLY_GRAMMAR, 40, self.talk_temperature)
-                if not is_generic(out, ix.me.persona.get("belief", -1)):
-                    break
-            return spoken(out)
-        except Exception as e:
-            self._failed("reply", e)
-            return await self.fallback.reply(ix, heard, option)
+    best_of = 1       # candidates per spoken line
+    json_turns = False  # (see chat_prompt)
+    plain = False       # (see chat_prompt)
+
+    async def _best(self, write, me: NpcView, heard: str = "", mine: list[str] = (), rounds: int = 2):
+        """``write()`` -> (raw line, extra). Returns (cleaned line, extra) of the best candidate."""
+        belief = me.persona.get("belief", -1)
+        best, best_score, err = None, float("-inf"), None
+        for _ in range(rounds):
+            outs = await asyncio.gather(*(write() for _ in range(max(1, self.best_of))), return_exceptions=True)
+            for o in outs:
+                if isinstance(o, BaseException):
+                    err = o
+                    continue
+                s = line_score(o[0], heard, mine, belief)
+                if s > best_score:
+                    best, best_score = o, s
+            if best_score >= 0:  # (good enough: not bland, not a repeat)
+                break
+        if best is None or best_score == float("-inf"):
+            raise err or ValueError("no usable line")
+        return spoken(best[0]), best[1]
+
+    async def _interaction_raw(self, ix: Interaction) -> tuple[str, str]:
+        out = await self._complete(interaction_prompt(ix), interaction_grammar(ix.options), 48, self.talk_temperature)
+        option, _, line = out.partition("|")
+        if option.strip() not in ix.options:
+            raise ValueError(f"bad option {option.strip()!r}")
+        return line, option.strip()
 
     async def _line(self, messages: list[dict]) -> str:
         """One spoken line, free-form (under MAX_WORDS words)."""
@@ -1039,30 +1098,42 @@ class LlamaBrain:
         choice, _, line = out.partition("|")
         return line, choice.strip() == "leave"
 
-    json_turns = False  # (see chat_prompt)
+    async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
+        try:
+            line, option = await self._best(lambda: self._interaction_raw(ix), ix.me)
+            return option, line
+        except Exception as e:
+            self._failed("interaction", e)
+            return await self.fallback.choose_interaction(ix)
+
+    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
+        async def write():
+            return await self._line(reply_prompt(ix, heard, option)), None
+        try:
+            return (await self._best(write, ix.me, heard))[0]
+        except Exception as e:
+            self._failed("reply", e)
+            return await self.fallback.reply(ix, heard, option)
 
     async def chat(self, ix: Interaction, history: list[tuple[str, str]]) -> tuple[str, bool]:
         mine = [said for who, said in history if who == ix.me.name]
+        heard = history[-1][1] if history and history[-1][0] != ix.me.name else ""
+        messages = chat_prompt(ix, history, self.json_turns, self.plain)
         try:
-            for _ in range(3):  # re-roll a line that comes out bland, or that they already said
-                line, leave = await self._chat_line(chat_prompt(ix, history, self.json_turns))
-                if not is_generic(line, ix.me.persona.get("belief", -1)) and not repeats(line, mine):
-                    break
+            line, leave = await self._best(lambda: self._chat_line(messages), ix.me, heard, mine, rounds=3)
             # Small models choose "leave" far too eagerly: someone who has only just started
             # talking stays, unless something is really wrong (starving, hurt, a grudge).
             urgent = current_mood(ix.me.stats) in ("starving", "exhausted", "hurt and in pain") or ix.grudge <= -2
-            return spoken(line), leave and (urgent or len(mine) >= MIN_CHAT_LINES)
+            return line, leave and (urgent or len(mine) >= MIN_CHAT_LINES)
         except Exception as e:
             self._failed("chat", e)
             return await self.fallback.chat(ix, history)
 
     async def answer_sky(self, v: NpcView, heard: str, memories: list[str], news: list[str]) -> str:
+        async def write():
+            return await self._line(sky_prompt(v, heard, memories, news)), None
         try:
-            for _ in range(2):
-                out = await self._line(sky_prompt(v, heard, memories, news))
-                if not is_generic(out, v.persona.get("belief", -1)):
-                    break
-            return spoken(out)
+            return (await self._best(write, v, heard))[0]
         except Exception as e:
             self._failed("answer to the sky", e)
             return await self.fallback.answer_sky(v, heard, memories, news)
@@ -1079,6 +1150,14 @@ class LlamaBrain:
         await self._client.aclose()
 
 
+# Context each request gets. Prompts here stay under ~1,000 tokens, but Ollama otherwise
+# reserves its default (32k) for every parallel slot: with OLLAMA_NUM_PARALLEL=4 that is
+# 131k tokens a model, gemma4:mini alone was predicted at 18 GB, and the thinking and
+# talking models kept evicting each other. Every request (and the warm-up) must send the
+# same value, or Ollama reloads the model to change it.
+NUM_CTX = 4096
+
+
 class OllamaBrain(LlamaBrain):
     """Talks to Ollama's native /api/chat. Ollama has no GBNF parameter, but
     its ``format`` field takes a JSON schema that Ollama compiles into a
@@ -1088,9 +1167,12 @@ class OllamaBrain(LlamaBrain):
     name = "ollama"
 
     def __init__(self, url: str, model: str, fallback: HeuristicBrain, timeout: float = 90.0,
-                 temperature: float = 0.7, concurrency: int = 4, talk_temperature: float = 1.05):
+                 temperature: float = 0.7, concurrency: int = 4, talk_temperature: float = 1.05,
+                 plain: bool = False, best_of: int = 1):
         super().__init__(url, fallback, timeout, temperature, concurrency, talk_temperature)
         self.model = model
+        self.plain = plain        # speak in free text instead of forced JSON (see chat_prompt)
+        self.best_of = best_of
         self.name = f"ollama:{model}"
 
     async def server_up(self) -> bool:
@@ -1133,13 +1215,15 @@ class OllamaBrain(LlamaBrain):
         """Load the model into memory now so the first tick isn't a cold start."""
         log.info("Loading %s into Ollama (first load can take a minute)...", self.model)
         r = await self._client.post(f"{self.url}/api/generate", timeout=timeout,
-                                    json={"model": self.model, "keep_alive": "30m"})
+                                    json={"model": self.model, "keep_alive": "30m",
+                                          "options": {"num_ctx": NUM_CTX}})
         r.raise_for_status()
         log.info("%s ready", self.model)
 
-    async def _chat(self, messages: list[dict], schema: dict, max_tokens: int,
-                    temperature: float | None = None) -> dict:
-        opts = {"temperature": self.temperature if temperature is None else temperature, "num_predict": max_tokens}
+    async def _post(self, messages: list[dict], max_tokens: int, temperature: float | None,
+                    schema: dict | None) -> dict:
+        opts = {"temperature": self.temperature if temperature is None else temperature, "num_predict": max_tokens,
+                "num_ctx": NUM_CTX}
         if temperature is not None:
             opts.update(repeat_penalty=1.2, presence_penalty=0.6, min_p=0.05)
         async with self._sem:
@@ -1147,14 +1231,40 @@ class OllamaBrain(LlamaBrain):
             r = await self._client.post(f"{self.url}/api/chat", json={
                 "model": self.model,
                 "messages": messages,
-                "format": schema,
+                **({"format": schema} if schema else {}),
                 "stream": False,
                 "think": False,
                 "keep_alive": "30m",
                 "options": opts,
             })
             r.raise_for_status()
-            return json.loads(r.json()["message"]["content"])
+            return r.json()["message"]
+
+    # Models seen to ignore think=false when given a schema (gemma4): they are asked in plain words.
+    schema_thinkers: set[str] = set()
+
+    async def _chat(self, messages: list[dict], schema: dict, max_tokens: int,
+                    temperature: float | None = None) -> dict:
+        if self.model not in self.schema_thinkers:
+            msg = await self._post(messages, max_tokens, temperature, schema)
+            if msg.get("content", "").strip() or not msg.get("thinking"):
+                return json.loads(msg["content"])
+            if self.model not in self.schema_thinkers:
+                self.schema_thinkers.add(self.model)
+                log.info("%s thinks instead of answering when its output is forced; asking it in plain words", self.model)
+        # Without a forced format: ask for the JSON in words and pick it out of the answer.
+        ask = messages[:-1] + [{**messages[-1], "content": messages[-1]["content"] +
+                                "\nAnswer with only this JSON, nothing else: " + json.dumps(
+                                    {k: f"<{v.get('type', 'value')}>" for k, v in schema["properties"].items()})}]
+        content = (await self._post(ask, max_tokens + 16, temperature, None)).get("content", "")
+        m = re.search(r"\{.*\}", content, re.S)
+        if not m:
+            raise ValueError(f"no JSON in {content[:80]!r}")
+        return json.loads(m.group())
+
+    async def _text(self, messages: list[dict], max_tokens: int) -> str:
+        """A free-text answer (no forced format): how capable models talk best."""
+        return (await self._post(messages, max_tokens, self.talk_temperature, None)).get("content", "")
 
     async def choose_action(self, v: NpcView, names: dict[int, str]) -> int:
         schema = {"type": "object", "required": ["action"],
@@ -1168,43 +1278,30 @@ class OllamaBrain(LlamaBrain):
             self._failed("action", e)
             return self.fallback.pick_action(v)
 
-    async def choose_interaction(self, ix: Interaction) -> tuple[str, str]:
+    async def _interaction_raw(self, ix: Interaction) -> tuple[str, str]:
         schema = {"type": "object", "required": ["option", "line"],
                   "properties": {"option": {"type": "string", "enum": ix.options},
                                  "line": {"type": "string"}}}
-        try:
-            for _ in range(2):  # one retry if the line comes out bland
-                out = await self._chat(interaction_prompt(ix), schema, 64, self.talk_temperature)
-                if out["option"] not in ix.options:
-                    raise ValueError(f"bad option {out['option']!r}")
-                if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
-                    break
-            return out["option"], spoken(str(out["line"]))
-        except Exception as e:
-            self._failed("interaction", e)
-            return await self.fallback.choose_interaction(ix)
+        out = await self._chat(interaction_prompt(ix), schema, 64, self.talk_temperature)
+        if out["option"] not in ix.options:
+            raise ValueError(f"bad option {out['option']!r}")
+        return str(out["line"]), out["option"]
 
-    async def reply(self, ix: Interaction, heard: str, option: str) -> str:
-        schema = {"type": "object", "required": ["line"], "properties": {"line": {"type": "string"}}}
-        try:
-            for _ in range(2):
-                out = await self._chat(reply_prompt(ix, heard, option), schema, 56, self.talk_temperature)
-                if not is_generic(str(out["line"]), ix.me.persona.get("belief", -1)):
-                    break
-            return spoken(str(out["line"]))
-        except Exception as e:
-            self._failed("reply", e)
-            return await self.fallback.reply(ix, heard, option)
-
-    json_turns = True  # (Ollama forces JSON answers: show our past turns in that shape too)
+    @property
+    def json_turns(self) -> bool:  # (forced JSON answers: show our past turns in that shape too)
+        return not self.plain
 
     async def _chat_line(self, messages: list[dict]) -> tuple[str, bool]:
+        if self.plain:
+            return plain_line(await self._text(messages, 60))
         schema = {"type": "object", "required": ["line", "leave"],
                   "properties": {"line": {"type": "string"}, "leave": {"type": "boolean"}}}
         out = await self._chat(messages, schema, 72, self.talk_temperature)
         return str(out["line"]), bool(out["leave"])
 
     async def _line(self, messages: list[dict]) -> str:
+        if self.plain:
+            return plain_line(await self._text(messages, 50))[0]
         schema = {"type": "object", "required": ["line"], "properties": {"line": {"type": "string"}}}
         return str((await self._chat(messages, schema, 56, self.talk_temperature))["line"])
 
@@ -1216,6 +1313,58 @@ class OllamaBrain(LlamaBrain):
         except Exception as e:
             self._failed("consent", e)
             return await self.fallback.consent(ix, proposal, line)
+
+
+# --- the talker: a second model for what the player reads ------------------------------
+# Villagers decide hundreds of times a minute, so a tiny, fast model does that. What the
+# player actually reads (their own conversations, the voice from the sky, villagers
+# speaking to them) is rare and is worth a bigger model, writing several lines at once
+# to keep the best. In "auto", the first of these that is installed is used.
+TALK_MODELS = ("gemma4:mini", "gemma3:4b", "qwen3:4b", "llama3.2:3b", "phi4-mini", "gemma3:1b")
+BEST_OF = 3
+
+
+async def installed_models(ollama_url: str) -> list[str]:
+    """The models Ollama has, smallest first ([] if it isn't running)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3) as c:
+            models = (await c.get(f"{ollama_url.rstrip('/')}/api/tags")).json().get("models", [])
+        return [m["name"].removesuffix(":latest") for m in sorted(models, key=lambda m: m.get("size", 0))]
+    except Exception:
+        return []
+
+
+async def make_talker(brain, talk_model: str, ollama_url: str, best_of: int = BEST_OF):
+    """The brain that writes what the player reads. ``talk_model``: "auto", "same"
+    (the main model, still best-of-``best_of``) or an Ollama model name. Falls back
+    to ``brain`` itself when there is no LLM at all."""
+    fallback = getattr(brain, "fallback", brain)
+    installed = await installed_models(ollama_url)
+    name = talk_model
+    if talk_model == "auto":
+        name = next((m for m in TALK_MODELS if m in installed), "same")
+    if name == "heuristic" or (name == "same" and isinstance(brain, HeuristicBrain)):
+        return fallback
+    if name == "same":
+        if not isinstance(brain, OllamaBrain):  # (llama.cpp: one model; just write more lines at once)
+            talker = LlamaBrain(brain.url, fallback)
+            talker.best_of = best_of
+            return talker
+        name = brain.model
+    if name not in installed:
+        log.warning("Talk model %r is not installed (try: ollama pull %s); villagers talk with %s", name, name,
+                    getattr(brain, "model", brain.name))
+        name = getattr(brain, "model", None)
+        if name is None:
+            return brain
+    talker = OllamaBrain(ollama_url, name, fallback, plain=True, best_of=best_of, concurrency=max(4, best_of))
+    talker.name = f"ollama:{name} best of {best_of}"
+    try:
+        await talker.warm_up()
+    except Exception as e:
+        log.warning("Could not load talk model %s: %r", name, e)
+    return talker
 
 
 async def make_brain(kind: str, url: str, seed: int, ollama_url: str = "http://127.0.0.1:11434",

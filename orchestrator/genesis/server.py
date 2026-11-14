@@ -8,6 +8,8 @@ the player picks a map and presses Start (``--autostart`` skips that).
 Client -> server messages (JSON): {"cmd": "pause" | "resume" | "step"},
 {"cmd": "speed", "tick_ms": 300}, {"cmd": "reset", "seed": 123, "map": ..., "width": ...,
 "height": ..., "population": ...} (a new world, which starts at once),
+{"cmd": "models", "think": name, "talk": name, "best_of": n} (change the LLMs; any may be left
+out, and with none it just re-reads what Ollama has installed),
 {"cmd": "preview", ...same options...} (what that world would look like, answered with
 {"type": "preview", ...} to the asker only), {"cmd": "world", "op": {...}} (see World.apply).
 Server -> client: {"type": "defs", ...} once on connect (the content registry and the maps),
@@ -31,7 +33,8 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from .config import add_sim_args, build_sim
+from .brain import installed_models
+from .config import add_sim_args, build_sim, model_of, switch_models
 from .engine import MAPS, World
 from .engine.defs import client_defs
 
@@ -46,8 +49,11 @@ LIMITS = {"width": (24, 200), "height": (18, 150), "population": (1, 24)}
 
 
 class Hub:
-    def __init__(self, sim, tick_ms: int, menu: bool = False):
+    def __init__(self, sim, tick_ms: int, menu: bool = False, args=None):
         self.sim = sim
+        self.args = args
+        self.installed: list[str] = []  # Ollama's models (see _cmd_models)
+        self.switching = False
         self.tick_ms = tick_ms
         # On the start screen the world waits: nothing moves until the player picks a map.
         self.menu = menu
@@ -61,7 +67,10 @@ class Hub:
         cfg = self.sim.cfg
         return {"type": "control", "paused": self.paused, "menu": self.menu, "tick_ms": self.tick_ms,
                 "seed": cfg.seed, "map": cfg.map_name, "width": cfg.width, "height": cfg.height,
-                "population": cfg.population}
+                "population": cfg.population,
+                "models": {"installed": self.installed, "think": model_of(self.sim.brain),
+                           "talk": model_of(self.sim.talker), "best_of": getattr(self.sim.talker, "best_of", 1),
+                           "switching": self.switching}}
 
     async def broadcast(self, msg: dict):
         dead = []
@@ -159,6 +168,20 @@ class Hub:
                                 "start": list(world.start), "id": msg.get("id")})
         return False
 
+    async def _cmd_models(self, msg, ws):
+        """Change which LLMs villagers think and talk with (see config.switch_models)."""
+        if self.args is None or self.switching:
+            return False
+        want = {k: msg.get(k) or None for k in ("think", "talk", "best_of")}
+        if any(want.values()):
+            self.switching = True
+            await self.broadcast(self.control())
+            try:
+                await switch_models(self.sim, self.args, want["think"], want["talk"], want["best_of"])
+            finally:
+                self.switching = False
+        self.installed = await installed_models(self.args.ollama_url)
+
     # --- the player: becoming someone, telling them what to do, speaking, god powers ---
     async def _cmd_possess(self, msg, ws):
         """{"cmd": "possess", "npc": id}: become that villager."""
@@ -211,15 +234,17 @@ def create_app(args) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         sim = await build_sim(args)
-        hub = Hub(sim, args.tick_ms, menu=not args.autostart)
+        hub = Hub(sim, args.tick_ms, menu=not args.autostart, args=args)
+        hub.installed = await installed_models(args.ollama_url)
         hub.paused = hub.paused or args.paused
         app.state.hub = hub
         task = asyncio.create_task(hub.run())
         yield
         task.cancel()
         sim.engine.close()
-        if hasattr(sim.brain, "close"):
-            await sim.brain.close()
+        for b in {id(sim.brain): sim.brain, id(sim.talker): sim.talker}.values():
+            if hasattr(b, "close"):
+                await b.close()
 
     app = FastAPI(title="Project Genesis", lifespan=lifespan)
 

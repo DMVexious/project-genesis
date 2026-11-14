@@ -472,6 +472,42 @@ class BrainTests(unittest.TestCase):
         self.assertIn("social_urge", payload["you"])
         self.assertIn('"mate"', interaction_grammar(ix.options))  # the grammar still uses the bare keys
 
+    def test_line_score_prefers_real_answers(self):
+        from genesis.brain import line_score
+        heard = "did you eat today?"
+        good = "Yeah, some fish earlier on. Why, you starving?"
+        self.assertGreater(line_score(good, heard), line_score("Hello there, my friend.", heard))  # stiff
+        self.assertGreater(line_score(good, heard), line_score("Did you eat today?", heard))         # parrot
+        self.assertGreater(line_score(good, heard), line_score(good, heard, mine=[good]))           # repeat
+        self.assertEqual(line_score('{"line": ', heard), float("-inf"))                              # junk
+
+    def test_plain_line_parsing(self):
+        from genesis.brain import plain_line
+        self.assertEqual(plain_line('Ash: "Gotta go, see ya." [bye]'), ("Gotta go, see ya.", True))
+        self.assertEqual(plain_line("\nNah, just tired.\n(she yawns)"), ("Nah, just tired.", False))
+
+    def test_best_of_runs_candidates_together_and_keeps_the_best(self):
+        lines = iter(["Hello there.", "Ugh. Starving, honestly. You got food?", "Hi."])
+
+        class Fake(LlamaBrain):
+            best_of = 3
+            async def _line(self, messages):
+                await asyncio.sleep(0)
+                return next(lines)
+
+        brain = Fake("http://127.0.0.1:1", HeuristicBrain(1))
+        n = Engine().init(1, 20, 15, 2)["npcs"]
+        me = NpcView(n[0]["id"], "Ash", Genome("Neutral", "Lazy", "Loner"), n[0], [])
+        them = NpcView(n[1]["id"], "Bo", Genome("Neutral", "Lazy", "Loner"), n[1], [])
+        out = asyncio.run(brain.reply(Interaction(me, them, ["talk"], [], 0), "you got any food?", "talk"))
+        self.assertEqual(out, "Ugh. Starving, honestly. You got food?")
+
+    def test_no_llm_asked_means_no_talk_model(self):
+        from genesis.brain import make_talker
+        h = HeuristicBrain(1)
+        self.assertIs(asyncio.run(make_talker(h, "heuristic", "http://127.0.0.1:1")), h)
+        self.assertIs(asyncio.run(make_talker(h, "auto", "http://127.0.0.1:1")), h)  # (no Ollama there)
+
 
 class BreedingTests(unittest.TestCase):
     def test_parents_rest_after_a_child(self):

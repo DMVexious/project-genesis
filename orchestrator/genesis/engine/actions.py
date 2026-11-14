@@ -9,6 +9,8 @@ A brain never invents an action: it picks an index into the list
 """
 from __future__ import annotations
 
+import logging
+
 from .defs import (ACTIONS, ATTR_AVERAGE, BUILDINGS, COST_ATTACK, COST_DEFEND, COST_MATE, DIRS, EAT_HUNGER, ELDER_AGE,
                    GESTATION, GOTO_BIT, GOTO_LIMIT, INTERACTIONS, ITEMS, MATE_COOLDOWN, MATE_PRIVACY, MATE_SOCIAL,
                    MATURE_AGE, MAX_TARGETS, OBJECTS, POP_LIMIT, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
@@ -85,8 +87,20 @@ def generate_actions(world, n) -> list[dict]:
     ctx = Context(world, n)
     acts: list[dict] = []
     for kind in ACTIONS:
-        acts.extend(OFFER[kind](world, n, ctx))
+        try:
+            acts.extend(OFFER[kind](world, n, ctx))
+        except Exception:
+            # A bug in one kind of action must not take away everything else someone can
+            # do (a KeyError here once reached Actions.get and emptied the whole list).
+            if kind not in _BROKEN:
+                _BROKEN.add(kind)
+                logging.getLogger(__name__).exception("offering %r to npc %d failed; skipping it", kind, n.id)
+            if kind == "sleep":
+                acts.append({"kind": "sleep"})
     return acts
+
+
+_BROKEN: set[str] = set()  # action kinds whose offer has failed (logged once each)
 
 
 def execute(world, n, act: dict, opt: int):

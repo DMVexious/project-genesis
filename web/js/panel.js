@@ -153,7 +153,7 @@ export function renderPanel(f) {
   const cells = [["pop", s.population], ["births", s.births], ["deaths", s.deaths], ["gen", s.max_generation],
     ["tick", f.tick], ...built, ["fights", s.fights], ["trades", s.trades]];
   setHtml($("stats"), cells.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("") +
-    `<div class="stack">brain: ${esc(f.brain)} · memory: ${esc(f.memory)} (${s.memories})</div>` +
+    `<div class="stack">brain: ${esc(f.brain)}${f.talker && f.talker !== f.brain ? ` · talks: ${esc(f.talker)}` : ""} · memory: ${esc(f.memory)} (${s.memories})</div>` +
     (s.decisions ? `<div class="stack">decisions: 🧠 ${s.decisions.llm} · ⚡ ${s.decisions.reflex} · ↻ ${s.decisions.plan}</div>` : ""));
 
   renderList([...f.npcs].sort((a, b) => a.id - b.id));

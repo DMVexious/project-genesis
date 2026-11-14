@@ -82,7 +82,7 @@ class SimConfig:
 
 
 class Simulation:
-    def __init__(self, engine, brain, memory, config: SimConfig):
+    def __init__(self, engine, brain, memory, config: SimConfig, talker=None):
         # Memory embedding/queries get one dedicated worker thread. Using the
         # shared default pool let a backlog of slow embeddings starve it, and
         # asyncio resolves host names on that pool, so LLM requests stalled too.
@@ -91,6 +91,9 @@ class Simulation:
         self.engine, self.brain, self.memory, self.cfg = engine, brain, memory, config
         # LLM brains carry a heuristic fallback; that same brain handles reflexes.
         self.reflex = getattr(brain, "fallback", brain)
+        # What the player reads (their conversations, the voice from the sky, villagers
+        # speaking to them) can be written by a bigger model: see brain.make_talker.
+        self.talker = talker or brain
         self.reset(config.seed)
 
     def reset(self, seed: int | None = None):
@@ -594,7 +597,7 @@ class Simulation:
                                        f"{other.name} refused to {what} with me.", -1))
                 self._note(self.state["tick"], f"{other.name} said no.")
                 context, option = f"refused_{key}", "talk"
-        replier = self.brain if hasattr(self.brain, "reply") else self.reflex
+        replier = self.talker if hasattr(self.talker, "reply") else self.reflex
         reply = await replier.reply(rev, heard, context)
         return {"type": "interact", "action": act, "option": option, "source": "player",
                 "line": {"npc": me.id, "target": other.id, "text": text, "reply": clamp_words(reply),
@@ -693,7 +696,7 @@ class Simulation:
         ix = Interaction(me, other, ["talk"], [m.text for m in recalled], self.memory.grudge(me.id, other.id),
                          list(self.news))
         history = [(self.meta[who].name, text) for who, text in lines]
-        brain = self.brain if hasattr(self.brain, "chat") else self.reflex
+        brain = self.talker if hasattr(self.talker, "chat") else self.reflex
         line, leave = await brain.chat(ix, history)
         return clamp_words(line), leave, not isinstance(line, Canned)
 
@@ -754,7 +757,7 @@ class Simulation:
     async def _answer_voice(self, n: dict, text: str) -> dict:
         v = self.view(n, actions=False)
         before = [m.text for m in await self._recall(n["id"], -1)]
-        line = await self.brain.answer_sky(v, text, before, list(self.news)) if hasattr(self.brain, "answer_sky") \
+        line = await self.talker.answer_sky(v, text, before, list(self.news)) if hasattr(self.talker, "answer_sky") \
             else "Who said that?!"
         return {"npc": n["id"], "said": text, "reply": clamp_words(line), "llm": not isinstance(line, Canned)}
 
@@ -886,6 +889,9 @@ class Simulation:
         # What to build is a deliberate choice: while an LLM is answering, only it
         # decides to build. Reflexes build only in heuristic-only runs or while
         # the LLM is paused for being too slow.
+        if not v.actions:  # (nothing they can do this tick: never let one villager stop the world)
+            log.warning("npc %d has no actions at tick %d", v.id, self.state["tick"])
+            return
         llm_on = self.reflex is not self.brain and not self.llm_paused()
         idx = self.reflex.pick_action(v, frozenset({"build"}) if llm_on else frozenset())
         choices[v.id], sources[v.id] = (idx, 0), "reflex"
@@ -973,7 +979,8 @@ class Simulation:
             instinct, _ = await self.reflex.choose_interaction(ix)
             if instinct == "mate":
                 ix.options = ["mate"]
-        option, said = await brain.choose_interaction(ix)
+        speaker = self.talker if other.id == self.possessed and brain is not self.reflex else brain
+        option, said = await speaker.choose_interaction(ix)
         said_llm = not isinstance(said, Canned)  # the LLM brain hands back a Canned line when it fails
         said = clamp_words(said)
         their = await self._recall(other.id, nid)
@@ -1363,6 +1370,7 @@ class Simulation:
                       "decisions": dict(self.decision_stats),
                       **self.totals},
             "brain": getattr(self.brain, "name", "?") + (" (paused: slow)" if self.llm_paused(tick) else ""),
+            "talker": getattr(self.talker, "name", "?"),
             "map": self.cfg.map_name,
             "possessed": self.possessed, "player": self._player_frame(),
             "sites": self.state.get("sites", []),
