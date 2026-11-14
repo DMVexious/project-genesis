@@ -11,7 +11,11 @@ import { DETAILS, EDGE_VARIANTS, VARIANTS, tileHash } from "./textures.js";
 
 const SIDES = [["n", 0, -1], ["e", 1, 0], ["s", 0, 1], ["w", -1, 0]];
 const CORNERS = [["nw", -1, -1], ["ne", 1, -1], ["sw", -1, 1], ["se", 1, 1]];
-const g = { key: "", images: [], textures: [], water: null, light: null };
+const g = { key: "", images: [], textures: [], water: null, light: null, winter: false, tint: 0xffffff };
+// The ground through the year (multiplied over it): fresh in spring, sun-bleached
+// in summer, russet in autumn, cold and grey under the frost of winter.
+const SEASON_TINT = { spring: 0xffffff, summer: 0xfff4d8, autumn: 0xf4dcb4, winter: 0xdfe7ef };
+const NO_FROST = new Set(["snow", "peak", "ash"]);
 
 export function clearGround(sc) {
   for (const img of g.images) { untrack(img); img.destroy(); }
@@ -48,8 +52,36 @@ function paintTile(ctx, src, at, x, y, px, py) {
   }
   // a flower, a pebble, a lily pad... now and then
   const kinds = DETAILS[t.key];
-  if (kinds && (h >>> 8) % (t.key === "grass" || t.key === "forest" ? 4 : 6) === 0)
+  if (kinds && (h >>> 8) % (t.key === "grass" || t.key === "forest" ? 4 : 6) === 0 && !(g.winter && !t.water))
     ctx.drawImage(src(`d_${t.key}${(h >>> 12) % kinds}`), px + 2 + ((h >>> 16) % 9), py + 2 + ((h >>> 20) % 9));
+  if (g.winter && !t.water && !NO_FROST.has(t.key)) ctx.drawImage(src(`frost${(h >>> 3) % 3}`), px, py);
+}
+
+function repaint(keys) {
+  const W = g.width, H = g.height;
+  for (const k of keys) {
+    const [x0, y0] = k.split(":").map(Number);
+    const tex = g.chunks.get(k);
+    if (!tex) continue;
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, tex.width, tex.height);
+    const x1 = Math.min(W, x0 + CHUNK), y1 = Math.min(H, y0 + CHUNK);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) paintTile(ctx, g.src, g.at, x, y, (x - x0) * TILE, (y - y0) * TILE);
+    tex.refresh();
+  }
+}
+
+// The season shows on the ground: a tint over it all, and frost on the land in winter.
+export function setGroundSeason(season) {
+  const tint = SEASON_TINT[season] || 0xffffff, winter = season === "winter";
+  if (tint !== g.tint) {
+    g.tint = tint;
+    for (const img of g.images) img.setTint(tint);
+  }
+  if (winter !== g.winter) {
+    g.winter = winter;
+    if (g.chunks) repaint(g.chunks.keys());
+  }
 }
 
 // (Re)paint the ground if this frame's world or terrain is not the one on show.
@@ -70,16 +102,7 @@ function patchGround(sc, f) {
     }
   }
   g.rows = f.terrain;
-  for (const k of dirty) {
-    const [x0, y0] = k.split(":").map(Number);
-    const tex = g.chunks.get(k);
-    if (!tex) continue;
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, tex.width, tex.height);
-    const x1 = Math.min(W, x0 + CHUNK), y1 = Math.min(H, y0 + CHUNK);
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) paintTile(ctx, g.src, g.at, x, y, (x - x0) * TILE, (y - y0) * TILE);
-    tex.refresh();
-  }
+  repaint(dirty);
 }
 
 export function buildGround(sc, f) {
@@ -95,7 +118,7 @@ export function buildGround(sc, f) {
   g.base = base;
   g.rows = f.terrain;
   g.chunks = new Map();
-  const W = f.width, H = f.height;
+  const W = g.width = f.width, H = g.height = f.height;
   const land = g.land = f.terrain.map((row) => [...row].map(terrainOf));
   const at = g.at = (x, y) => (x >= 0 && y >= 0 && x < W && y < H ? land[y][x] : null);
   const sources = new Map();
@@ -120,7 +143,7 @@ export function buildGround(sc, f) {
       tex.refresh();
       g.chunks.set(`${x0}:${y0}`, tex);
       g.textures.push(name);
-      g.images.push(track(sc.add.image(x0 * TILE, y0 * TILE, name).setOrigin(0).setDepth(-5), x0, y0));
+      g.images.push(track(sc.add.image(x0 * TILE, y0 * TILE, name).setOrigin(0).setDepth(-5).setTint(g.tint), x0, y0));
     }
   }
 
@@ -130,7 +153,7 @@ export function buildGround(sc, f) {
       if (land[y][x] && land[y][x].key === "peak") {
         const h = tileHash(x, y);
         const img = sc.add.image(x * TILE + TILE / 2 + ((h >>> 4) % 7) - 3, (y + 1) * TILE + 2, `peak${h % 3}`)
-          .setOrigin(0.5, 1).setDepth((y + 1) * TILE - 4);
+          .setOrigin(0.5, 1).setDepth((y + 1) * TILE - 4).setTint(g.tint);
         g.images.push(track(img, x, y));
       }
     }

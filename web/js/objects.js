@@ -16,6 +16,15 @@ function treeFor(ground, h) {
   return h % 4 === 0 ? "tree_birch" : `tree_oak${(h >>> 2) % 2}`;
 }
 
+// The same tree through the year: gold and red in autumn, bare (and snowy pines) in winter.
+const SEASONAL = {
+  autumn: { tree_oak0: "tree_oak0_autumn", tree_oak1: "tree_oak1_autumn", tree_birch: "tree_birch_autumn" },
+  winter: { tree_oak0: "tree_bare0", tree_oak1: "tree_bare1", tree_birch: "tree_birch_bare", tree_pine: "tree_pine_snow",
+            tree_apple: "tree_apple_bare" },
+};
+let season = "";
+const inSeason = (key) => (SEASONAL[season] && SEASONAL[season][key]) || key;
+
 // How each kind of thing is drawn. tex/spent: its picture standing and after it
 // has been harvested; sway: how far it may sit off-centre; flat: lies on the ground.
 const LOOK = {
@@ -26,25 +35,28 @@ const LOOK = {
   fruit: { tex: () => "tree_apple", spent: () => "tree_apple_bare", sway: 2, sizes: true },
   cactus: { tex: () => "cactus", spent: () => "cactus_bare", sway: 3 },
   mushroom: { tex: () => "mushroom", spent: () => "mushroom_bare", sway: 2 },
-  hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}` },
+  hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}`, light: 1.6 },
   farm: { tex: () => "farm", spent: () => "farm_growing", flat: true },
-  fire: { tex: () => "fire0", fire: true },
+  fire: { tex: () => "fire0", fire: true, light: 4.5 },
+  blaze: { tex: () => "blaze0", blaze: true, light: 5.5 },
   sapling: { tex: () => "sapling", sway: 3 },
-  house: { tex: () => "house" },
+  house: { tex: () => "house", light: 2 },
   storehouse: { tex: () => "storehouse" },
   well: { tex: () => "well" },
   workshop: { tex: () => "workshop" },
-  shrine: { tex: () => "shrine" },
+  shrine: { tex: () => "shrine", light: 1.2 },
   site: { tex: () => "site", site: true },
 };
 const UNKNOWN = { tex: () => "drop_other" };
 
 const objs = new Map();   // tile index -> { img, ch, key, x, y, home, glow, bar, label }
 let sites = new Set();    // building sites with a progress bar showing
-const fires = new Set();
+const fires = new Set();   // campfires (flickering)
+const blazes = new Set();  // fires spreading through the trees
+export const lights = new Set();  // whatever lights up the dark around it (see sky.js)
 let shownKey = "", shownRows = null;
 
-const picture = (look, o, ground, h) => (o.spent && look.spent ? look.spent(ground, h) : look.tex(ground, h));
+const picture = (look, o, ground, h) => inSeason(o.spent && look.spent ? look.spent(ground, h) : look.tex(ground, h));
 
 export function clearObjects() {
   for (const rec of objs.values()) {
@@ -55,6 +67,8 @@ export function clearObjects() {
   }
   objs.clear();
   fires.clear();
+  blazes.clear();
+  lights.clear();
   sites = new Set();
   shownKey = "";
   shownRows = null;
@@ -64,6 +78,8 @@ function take(sc, i, rec, live) {
   objs.delete(i);
   dropSiteBar(rec);
   fires.delete(rec);
+  blazes.delete(rec);
+  lights.delete(rec);
   untrack(rec.img);
   if (rec.glow) { untrack(rec.glow); rec.glow.destroy(); }
   if (live) sc.tweens.add({ targets: rec.img, alpha: 0, duration: 300, onComplete: () => rec.img.destroy() });
@@ -105,12 +121,14 @@ function put(sc, f, x, y, i, ch, have, live) {
   const tint = look.tint ? look.tint(ground) : 0xffffff;
   if (tint !== 0xffffff) img.setTint(tint);
   track(img, x, y);
-  const rec = { img, ch, key: o.key, x, y, home: img.x, glow: null };
-  if (look.fire) {
+  const rec = { img, ch, key: o.key, x, y, home: img.x, glow: null, light: look.light || 0 };
+  if (look.fire || look.blaze) {
     rec.glow = track(sc.add.image(x * TILE + TILE / 2, y * TILE + TILE / 2 + 3, "glow")
-      .setBlendMode(Phaser.BlendModes.ADD).setDepth(-1).setScale(1.7), x, y);
-    fires.add(rec);
+      .setBlendMode(Phaser.BlendModes.ADD).setDepth(look.blaze ? img.depth + 0.5 : -1).setScale(look.blaze ? 2.6 : 1.7), x, y);
+    (look.blaze ? blazes : fires).add(rec);
+    rec.phase = (h % 97) / 10;
   }
+  if (rec.light) lights.add(rec);
   objs.set(i, rec);
   if (live) {  // newly built or grown: it rises into place
     const sx = img.scaleX, sy = img.scaleY;
@@ -174,12 +192,38 @@ function dropSiteBar(rec) {
   rec.bar = rec.label = null;
 }
 
-// Campfires flicker and their light breathes.
-export function flickerFires(t) {
+// Campfires flicker and their light breathes; wildfires roar and smoke.
+export function flickerFires(sc, t) {
   const frame = Math.floor(t / 220) % 2 ? "fire1" : "fire0";
   for (const rec of fires) {
     rec.img.setTexture(frame);
     if (rec.glow) rec.glow.setAlpha(0.75 + 0.2 * Math.sin(t / 180 + rec.x));
+  }
+  if (!blazes.size) return;
+  const view = sc.cameras.main.worldView;
+  for (const rec of blazes) {
+    rec.img.setTexture(Math.floor(t / 150 + rec.phase) % 2 ? "blaze1" : "blaze0");
+    if (rec.glow) rec.glow.setAlpha(0.8 + 0.2 * Math.sin(t / 90 + rec.phase));
+    if (!rec.img.visible || !view.contains(rec.img.x, rec.img.y) || t < (rec.smokeAt || 0)) continue;
+    rec.smokeAt = t + 260 + Math.random() * 260;
+    const puff = sc.add.image(rec.img.x + (Math.random() - 0.5) * 10, rec.img.y - 24, "smoke")
+      .setDepth(rec.img.depth + 1).setScale(1.2);
+    sc.tweens.add({ targets: puff, y: puff.y - 34 - Math.random() * 20, x: puff.x + 6 + Math.random() * 10,
+      scale: 3.4, alpha: { from: 0.9, to: 0 }, duration: 1800, ease: "Sine.out", onComplete: () => puff.destroy() });
+  }
+}
+
+// The seasons turn: every tree takes on its look for the time of year.
+export function setTreeSeason(s) {
+  if (s === season) return;
+  season = s;
+  const f = state.frame;
+  if (!f || !f.terrain) return;
+  for (const rec of objs.values()) {
+    const o = objectOf(rec.ch);
+    if (!o || !["tree", "fruit"].includes(o.key)) continue;
+    const ground = (terrainOf(f.terrain[rec.y][rec.x]) || {}).key;
+    rec.img.setTexture(picture(LOOK[o.key], o, ground, tileHash(rec.x, rec.y)));
   }
 }
 

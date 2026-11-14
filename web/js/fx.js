@@ -1,7 +1,9 @@
 /* Animations: tweened offsets on sprites, particles, floating text, and the
  * per-event choreography (swings, hits, chops...). */
 import { TILE } from "./config.js";
+import { animalSprite, hurt } from "./animals.js";
 import { shakeObject } from "./objects.js";
+import { bolt } from "./sky.js";
 import { state } from "./state.js";
 
 // --- animations -----------------------------------------------------------------
@@ -295,23 +297,71 @@ export function playFx(sc, events) {
         break;
       }
       case "death":
-        if (e.cause === "lightning") {  // a bolt from a clear sky
-          const top = sc.cameras.main.worldView.y - 20, x = s.tx, y = s.ty - 10;
-          const g = sc.add.graphics().setDepth(21000);
-          const pts = [[x + 6, top]];
-          for (let yy = top + 30; yy < y; yy += 26) pts.push([x + (Math.random() - 0.5) * 22, yy]);
-          pts.push([x, y]);
-          for (const [w, c] of [[6, 0x9fd3ff], [2, 0xffffff]]) {
-            g.lineStyle(w, c, 1);
-            g.beginPath(); g.moveTo(...pts[0]); for (const p of pts.slice(1)) g.lineTo(...p); g.strokePath();
-          }
-          sc.tweens.add({ targets: g, alpha: 0, duration: 420, delay: 120, onComplete: () => g.destroy() });
-          sc.cameras.main.flash(160, 230, 240, 255);
-          sc.cameras.main.shake(220, 0.006);
-          burst(sc, x, s.ty - 4, [0xffffff, 0x9fd3ff, 0x3a3a3a], 16, { spread: 20, up: 18, dur: 700 });
-        }
+        if (e.cause === "lightning") bolt(sc, s.tx, s.ty - 10);  // a bolt from a clear sky
         // dust when the body lands (see the fall in renderNpcs)
         burst(sc, s.tx + 8 * s.face, s.ty - 2, [0x9a8a78, 0x7a6a58], 8, { delay: 1150, spread: 14, up: 5, gravity: 6, dur: 700 });
+        break;
+      // --- the living world ---
+      case "hunt": {  // a spear or a stone at a deer, a rabbit, or the wolf at their throat
+        const b = animalSprite(e.animal);
+        const ax = b ? b.pos.x : tileCenter(e.x, e.y).x, ay = b ? b.pos.y - 8 : tileCenter(e.x, e.y).y;
+        faceToward(s, ax);
+        anim(sc, s, { x: { from: 0, to: 7 * s.face }, swing: { from: 0, to: 1 }, angle: { from: 0, to: 12 * s.face } },
+             110, { yoyo: true, ease: "Quad.in" });
+        if (e.hit) {
+          if (b) { b.face = ax < s.tx ? 1 : -1; hurt(sc, b); }
+          slash(sc, ax, ay, s.face, 110);
+          burst(sc, ax, ay, [0xd9534f, 0xff8a7a], e.killed ? 10 : 5, { delay: 110, spread: 12, up: 10 });
+          floatText(sc, ax, ay - 8, e.killed ? "got it!" : `-${e.damage}`, e.killed ? "#ffe08a" : "#ff6a5a",
+                    { size: e.killed ? 12 : 10, delay: 110, pop: !!e.killed });
+        } else {
+          floatText(sc, ax, ay - 8, "missed", "#c8c8d0", { size: 10, delay: 110 });
+        }
+        break;
+      }
+      case "mauled": {  // a wolf leaps at them
+        const b = animalSprite(e.animal);
+        if (b) {
+          const dx = s.tx - b.pos.x;
+          b.face = dx < 0 ? -1 : 1;
+          sc.tweens.add({ targets: b.pos, x: { from: b.pos.x, to: b.pos.x + Math.sign(dx || 1) * 8 }, hop: { from: 0, to: 1.5 },
+                          duration: 110, yoyo: true, ease: "Quad.in" });
+        }
+        if (e.hit) {
+          flash(sc, s, 110);
+          anim(sc, s, { x: { from: 0, to: (b ? Math.sign(s.tx - b.pos.x) : 1) * 5 }, angle: { from: 0, to: 12 } }, 90,
+               { yoyo: true, delay: 110 });
+          slash(sc, s.tx, s.ty - 12 * s.base, b ? Math.sign(s.tx - b.pos.x) || 1 : 1, 110);
+          burst(sc, s.tx, s.ty - 12 * s.base, [0xd9534f, 0xff8a7a, 0xffffff], 8, { delay: 110, spread: 14, up: 12 });
+          floatText(sc, s.tx, s.ty - 30 * s.base, `-${e.damage}`, "#ff6a5a", { size: 11, delay: 110 });
+        }
+        break;
+      }
+      case "douse": {  // beating out a fire
+        const c = tileCenter(e.x, e.y);
+        faceToward(s, c.x);
+        for (let i = 0; i < 3; i++)
+          anim(sc, s, { swing: { from: 0, to: 1 }, angle: { from: 0, to: 14 * s.face } }, 90, { yoyo: true, delay: i * 200 });
+        burst(sc, c.x, c.y, [0x8a8580, 0xb8b4ae, 0x9fd3ff], 14, { spread: 16, up: 20, gravity: -4, dur: 1000 });
+        floatText(sc, c.x, c.y - 18, "put out!", "#9fe8ff", { size: 10, delay: 400 });
+        break;
+      }
+      case "burn":
+        flash(sc, s, 0);
+        burst(sc, s.tx, s.ty - 8, [0xe8641e, 0xf6c04a], 6, { spread: 8, up: 14, gravity: -4 });
+        floatText(sc, s.tx, s.ty - 28 * s.base, "ow, hot!", "#ffb04a", { size: 10, delay: 100 });
+        break;
+      case "sick":
+        anim(sc, s, { sy: { from: 1, to: 0.9 }, angle: { from: 0, to: 6 } }, 300, { yoyo: true, repeat: 1 });
+        floatText(sc, s.tx, s.ty - 28 * s.base, "fever", "#b8d86a", { size: 10, rise: 14, dur: 1500 });
+        break;
+      case "recover":
+        anim(sc, s, { y: { from: 0, to: -5 }, sy: { from: 1, to: 1.1 } }, 160, { yoyo: true });
+        floatText(sc, s.tx, s.ty - 28 * s.base, "better!", "#9fe8ff", { size: 10, rise: 18, dur: 1500 });
+        break;
+      case "cold":  // shivering
+        anim(sc, s, { x: { from: -1, to: 1 } }, 45, { yoyo: true, repeat: 5 });
+        floatText(sc, s.tx + 6 * s.face, s.ty - 26 * s.base, "brr", "#cfe8ff", { size: 9, rise: 12, dur: 1200 });
         break;
       default: break;
     }

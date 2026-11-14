@@ -28,6 +28,24 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); 
   background: rgba(0, 0, 0, .75); padding: 8px 16px; border-radius: 6px; font-weight: 600;
 }
 
+/* --- the clock, and news of big happenings ----------------------------------- */
+#clock { position: absolute; right: 12px; bottom: 60px; z-index: 4; display: flex; gap: 10px; align-items: baseline;
+  padding: 5px 10px; border-radius: 6px; background: rgba(23, 19, 15, .86); border: 1px solid #4a3d30;
+  font-size: 12px; color: var(--muted); text-transform: capitalize; white-space: nowrap; transition: border-color 2s; }
+#clock b { color: var(--ink); }
+#clock[data-night="1"] { border-color: #34406a; }
+#clock[hidden], #news[hidden] { display: none; }
+#news { position: absolute; top: 84px; left: 50%; transform: translateX(-50%); z-index: 5; max-width: min(560px, calc(100% - 32px));
+  padding: 8px 16px; border-radius: 8px; background: rgba(23, 19, 15, .92); border: 1px solid var(--accent);
+  font-weight: 600; text-align: center; box-shadow: 0 6px 24px rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; }
+#news.go { cursor: pointer; pointer-events: auto; }
+#news.show { animation: news 6.4s ease both; }
+#news[data-kind="wildfire"], #news[data-kind="wolves"], #news[data-kind="plague"], #news[data-kind="flood"] { border-color: var(--bad); }
+@keyframes news { 0% { opacity: 0; transform: translate(-50%, -8px); } 6%, 88% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -4px); } }
+@media (prefers-reduced-motion: reduce) { #news.show { animation: none; opacity: 1; } }
+@media (max-width: 700px) { #clock { bottom: 96px; } }
+
 /* --- replay timeline ------------------------------------------------------ */
 #timeline {
   position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 6px;

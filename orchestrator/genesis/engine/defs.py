@@ -673,7 +673,8 @@ EVENT_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "👶
                "mine": "⛏️", "fish": "🎣", "plant": "🌱", "construct": "🔨", "built": "🏗️", "deposit": "📦",
                "withdraw": "📦", "pray": "🙏", "found": "🏘️", "path": "",
                "hunt": "🏹", "mauled": "🐺", "douse": "💦", "burn": "🔥",
-               "lightning": "⚡", "sick": "🤒", "recover": "💪"}
+               "lightning": "⚡", "sick": "🤒", "recover": "💪",
+               "cold": "🥶", "wolves": "", "ignite": ""}  # ("": no emoji, only the front end's effects and sounds)
 FX_EVENTS = frozenset(EVENT_EMOJI)
 
 

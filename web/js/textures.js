@@ -42,8 +42,9 @@ export const GROUND = {
   snow: { base: 0xe8eef2, dark: 0xd0dbe5, light: 0xffffff },
   peak: { base: 0x6f6a63, dark: 0x5c5852, light: 0x827d75 },
   path: { base: 0xb0946a, dark: 0x9a7f58, light: 0xc4a87c },
+  ash: { base: 0x4a4440, dark: 0x3a3532, light: 0x5e5650 },
 };
-export const VARIANTS = { sand: 3, dirt: 3, stone: 3, grass: 4, forest: 3, snow: 3, peak: 2, path: 3 };  // "t_<kind><n>"
+export const VARIANTS = { sand: 3, dirt: 3, stone: 3, grass: 4, forest: 3, snow: 3, peak: 2, path: 3, ash: 3 };  // "t_<kind><n>"
 export const DETAILS = { sand: 3, dirt: 3, stone: 3, grass: 5, forest: 4, snow: 3, shallow: 3 };  // "d_<kind><n>"
 export const EDGE_VARIANTS = 2;
 const WATER_DEEP = 0x2f6f9f, WATER_SHALLOW = 0x9fdcea, FOAM = 0xeef9fd;
@@ -91,6 +92,11 @@ export function makeTextures(scene) {
       for (let i = 0; i < 4; i++) px(Math.floor(r() * 24), Math.floor(r() * 24), 1, 1, 0xffffff);
     },
     peak: (r) => { for (let i = 0; i < 5; i++) px(Math.floor(r() * 20), Math.floor(r() * 21), 4, 3, 0x514d48); },
+    ash: (r) => {  // charcoal, and the last embers
+      for (let i = 0; i < 6; i++) px(Math.floor(r() * 21), Math.floor(r() * 22), 3, 1, 0x26221f);
+      for (let i = 0; i < 2; i++) px(Math.floor(r() * 22), Math.floor(r() * 22), 1, 1, r() < 0.5 ? 0xc0582a : 0x8a3a1e);
+      for (let i = 0; i < 3; i++) px(Math.floor(r() * 22), Math.floor(r() * 22), 2, 2, 0x6e6660);
+    },
     path: (r, pal) => {  // packed earth: pebbles, and the odd footprint
       for (let i = 0; i < 5; i++) px(Math.floor(r() * 22), Math.floor(r() * 22), 2, 1, 0x8a7350);
       for (let i = 0; i < 2; i++) { const x = 3 + Math.floor(r() * 15), y = 3 + Math.floor(r() * 15); px(x, y, 2, 3, pal.dark); px(x + 4, y + 2, 2, 3, pal.dark); }
@@ -265,6 +271,32 @@ export function makeTextures(scene) {
        ...(snow ? [[11, 2, 4, 2], [9, 6, 6, 2], [7, 11, 8, 2], [5, 17, 10, 2], [3, 24, 12, 2], [2, 31, 9, 1],
                    [14, 13, 4, 1], [17, 19, 3, 1]].map(([x, y, w, h]) => [x, y, w, h, 0xf4f8fb]) : [])]);
   };
+  // autumn: the same trees, turned gold and red
+  const AUTUMN = { mid: 0xc8742a, light: 0xe0952f, bright: 0xf2b84a, dark: 0xa85a22, deep: 0x8a4a1e };
+  const AUTUMN_RED = { mid: 0xb0442a, light: 0xd0602f, bright: 0xe8904a, dark: 0x8e3422, deep: 0x74301e };
+  oak("tree_oak0_autumn", AUTUMN);
+  oak("tree_oak1_autumn", AUTUMN_RED);
+  sprite("tree_birch_autumn", 26, 42,
+    [[12, 20, 3, 20, 0xe8e4da],
+     [6, 6, 14, 13, 0xd8b030], [4, 10, 18, 7, 0xd8b030], [9, 3, 8, 4, 0xd8b030]],
+    [[12, 24, 2, 1, 0x333333], [13, 29, 2, 1, 0x333333], [12, 34, 2, 1, 0x333333], [14, 20, 1, 20, 0xc9c5bb],
+     [7, 7, 6, 4, 0xf0cc4a], [10, 4, 4, 2, 0xffe27a], [5, 11, 3, 3, 0xf0cc4a],
+     [14, 12, 7, 6, 0xb88a22], [8, 17, 10, 2, 0xa07a1e]]);
+  // winter: bare branches with snow along the tops
+  const bare = (key, w, trunk, snowy) => {
+    const B = trunk;
+    sprite(key, w, 42,
+      [[w / 2 - 2, 20, 4, 20, B], [w / 2 - 4, 38, 8, 2, B],
+       [w / 2 - 9, 12, 2, 10, B], [w / 2 - 7, 20, 5, 2, B], [w / 2 + 6, 9, 2, 12, B], [w / 2 + 2, 18, 5, 2, B],
+       [w / 2 - 1, 5, 2, 16, B], [w / 2 - 12, 8, 2, 5, B], [w / 2 + 9, 6, 2, 4, B]],
+      [[w / 2 - 1, 20, 1, 18, 0x7a5a3a],
+       ...(snowy ? [[w / 2 - 9, 12, 2, 1], [w / 2 + 6, 9, 2, 1], [w / 2 - 1, 5, 2, 1], [w / 2 - 7, 20, 5, 1],
+                    [w / 2 + 2, 18, 5, 1], [w / 2 - 12, 8, 2, 1], [w / 2 + 9, 6, 2, 1]]
+                    .map(([x, y, ww, h]) => [x, y, ww, h, 0xf4f8fb]) : [])]);
+  };
+  bare("tree_bare0", 30, BARK, true);
+  bare("tree_bare1", 30, 0x4a3420, true);
+  bare("tree_birch_bare", 26, 0xd8d4ca, true);
   pine("tree_pine", false);
   pine("tree_pine_snow", true);
   sprite("tree_palm", 30, 44,
@@ -461,6 +493,69 @@ export function makeTextures(scene) {
   solids([[2, 4, 10, 4, 0x6aa6d8], [11, 3, 3, 6, 0x5a96c8]]);   // a fish
   px(3, 4, 8, 1, 0x9fd3ff); px(4, 5, 1, 1, OUTLINE);
   save("drop_fish", 16, 11);
+
+  // --- the living world (M3) -------------------------------------------------------
+  // A fire spreading through the trees: a charred trunk in tall flames (two frames).
+  const blaze = (key, flames) => {
+    g.fillStyle(0x000000, 0.25); g.fillEllipse(12, 28, 20, 6);
+    solids([[10, 16, 4, 12, 0x2a1e16], [6, 24, 12, 4, 0x2a1e16]]);
+    details(flames);
+    save(key, 24, 30);
+  };
+  blaze("blaze0", [[5, 12, 14, 14, 0xe8641e], [7, 6, 10, 10, 0xf08a2a], [9, 2, 6, 7, 0xf6c04a], [10, 14, 4, 10, 0xfff0a0],
+                   [3, 18, 4, 6, 0xd04a18], [17, 16, 4, 8, 0xd04a18]]);
+  blaze("blaze1", [[6, 10, 13, 16, 0xe8641e], [6, 5, 9, 9, 0xf08a2a], [10, 0, 5, 7, 0xf6c04a], [9, 13, 5, 11, 0xfff0a0],
+                   [4, 16, 3, 8, 0xd04a18], [18, 13, 3, 9, 0xd04a18], [15, 4, 2, 4, 0xf08a2a]]);
+  for (let r = 4; r >= 1; r--) { g.fillStyle(0x8a8580, 0.18); g.fillCircle(5, 5, r); }
+  save("smoke", 10, 10);
+  // weather
+  px(0, 0, 1, 7, 0xbfe0ff, 0.9); px(1, 1, 1, 5, 0xffffff, 0.5);
+  save("raindrop", 2, 8);
+  px(1, 0, 1, 3, 0xffffff); px(0, 1, 3, 1, 0xffffff);
+  save("snowflake", 3, 3);
+  for (let i = 0; i < 12; i++) {  // a soft, wide puff of fog
+    g.fillStyle(0xe8ecef, 0.07); g.fillEllipse(128, 64, 240 - i * 18, 110 - i * 8);
+  }
+  save("fogpuff", 256, 128);
+  for (let r = 64; r >= 2; r -= 2) { g.fillStyle(0xffffff, 0.06 + (64 - r) / 64 * 0.05); g.fillCircle(64, 64, r); }
+  save("lightmask", 128, 128);   // cut out of the dark around a light
+  for (let i = 0; i < 40; i++) {  // winter: snow lying on the ground (tiled over the map)
+    const x = (i * 37) % 64, y = (i * 23 + (i >> 2) * 7) % 64;
+    px(x, y, 2 + (i % 3), 1, 0xffffff, 0.9);
+  }
+  save("snowdust", 64, 64);
+  for (let v = 0; v < 3; v++) {  // frost and a skin of snow over the land in winter (one per tile)
+    const r = rand(9173 + v * 311);
+    for (let i = 0; i < 5; i++) {
+      const x = Math.floor(r() * 18), y = Math.floor(r() * 20), w = 3 + Math.floor(r() * 5);
+      px(x, y, w, 2, 0xf4f8fb, 0.85); px(x + 1, y - 1, w - 2, 1, 0xffffff, 0.7);
+    }
+    for (let i = 0; i < 26; i++) px(Math.floor(r() * 24), Math.floor(r() * 24), 1, 1, 0xffffff, 0.75);
+    save(`frost${v}`);
+  }
+  // a comet: a bright head and a long fading tail
+  for (let i = 0; i < 60; i++) px(i, 7 - Math.round(i / 30), 2, 2 + Math.round(i / 20), 0xcfe8ff, (i / 60) * 0.6);
+  g.fillStyle(0xffffff, 1); g.fillCircle(62, 7, 3);
+  save("comet", 66, 14);
+
+  // Wild animals. Each faces right; the sprite is flipped to face left.
+  sprite("deer", 22, 20,
+    [[4, 8, 13, 6, 0x9a6a3c], [15, 4, 4, 5, 0x9a6a3c], [17, 2, 3, 3, 0xa8784a],
+     [5, 14, 2, 5, 0x7a5230], [8, 14, 2, 5, 0x7a5230], [13, 14, 2, 5, 0x7a5230], [15, 14, 2, 5, 0x7a5230]],
+    [[5, 8, 11, 2, 0xb8885a], [4, 9, 2, 2, 0xf0e6d6], [19, 3, 1, 1, OUTLINE], [20, 4, 1, 1, 0x3a2a1e],
+     [16, 0, 1, 2, 0x5a3a20], [18, 0, 1, 2, 0x5a3a20], [15, 0, 1, 1, 0x5a3a20], [19, 0, 1, 1, 0x5a3a20],
+     [7, 11, 3, 1, 0xe0d0b8], [11, 10, 2, 1, 0xe0d0b8]]);
+  sprite("rabbit", 13, 11,
+    [[2, 5, 8, 5, 0xa89a88], [8, 3, 4, 4, 0xa89a88], [9, 0, 1, 4, 0xa89a88], [11, 0, 1, 4, 0xa89a88]],
+    [[1, 6, 2, 2, 0xf4f0ea], [10, 4, 1, 1, OUTLINE], [9, 1, 1, 2, 0xe0b0b0], [3, 9, 6, 1, 0x8a7c6c]]);
+  sprite("wolf", 24, 17,
+    [[4, 6, 14, 6, 0x6e6e78], [16, 3, 6, 5, 0x6e6e78], [21, 5, 3, 2, 0x6e6e78], [17, 1, 2, 3, 0x5a5a64],
+     [20, 1, 1, 2, 0x5a5a64], [1, 5, 4, 2, 0x5a5a64],
+     [5, 12, 2, 4, 0x55555e], [8, 12, 2, 4, 0x55555e], [14, 12, 2, 4, 0x55555e], [16, 12, 2, 4, 0x55555e]],
+    [[5, 6, 12, 2, 0x8a8a94], [6, 10, 10, 2, 0x5a5a64], [19, 4, 1, 1, 0xf6d24a], [23, 5, 1, 1, OUTLINE],
+     [17, 7, 4, 1, 0xd8d8de]]);
+  g.fillStyle(0xfff07a, 1); g.fillRect(0, 0, 2, 1); g.fillRect(4, 0, 2, 1);
+  save("eyes", 6, 1);   // a wolf's eyes, shining in the dark
   g.destroy();
 }
 

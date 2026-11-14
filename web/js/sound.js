@@ -139,6 +139,15 @@ const SOUNDS = {
     noise(1.6, { vol: 0.5, freq: 180, to: 60, q: 0.6, type: "lowpass", attack: 0.01 });
     noise(0.25, { vol: 0.4, freq: 2400, q: 0.5 });
   },
+  // the wild
+  howl: (a = 0) => {
+    tone(330, 1.6, { type: "sine", vol: 0.12, to: 520, at: a, attack: 0.5 });
+    tone(520, 1.1, { type: "sine", vol: 0.1, to: 300, at: a + 1.4, attack: 0.2 });
+    tone(661, 1.4, { type: "triangle", vol: 0.04, to: 1040, at: a, attack: 0.5 });
+  },
+  growl: (a = 0) => { noise(0.35, { vol: 0.22, freq: 160, q: 4, at: a }); tone(90, 0.3, { type: "sawtooth", vol: 0.12, to: 70, at: a }); },
+  hiss: (a = 0) => { noise(0.6, { vol: 0.22, freq: 3000, to: 900, q: 0.6, at: a }); },
+  rumble: () => { noise(2.2, { vol: 0.32, freq: 120, to: 50, q: 0.6, type: "lowpass", attack: 0.3 }); },
   death: () => { tone(220, 1.1, { type: "triangle", vol: 0.22, to: 55 }); tone(165, 1.2, { vol: 0.15, to: 41, at: 0.1 }); },
 };
 
@@ -150,8 +159,31 @@ export function playSelect() { unlock(); if (enabled && ctx) SOUNDS.select(); }
 
 // Called with every live frame: turn what happened to the selected villager into sound.
 let lastPos = null, lastSnore = 0;
+// Rain on the leaves: a soft bed of noise for as long as it rains (heard by all).
+let rain = null;
+function setRain(level) {
+  if (!ctx || (!rain && (!level || !ready()))) return;
+  if (!rain) {
+    const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    src.buffer = noiseBuf; src.loop = true;
+    f.type = "lowpass"; f.frequency.value = 1400;
+    g.gain.value = 0.0001;
+    src.connect(f).connect(g).connect(master);
+    src.start();
+    rain = { src, g };
+  }
+  rain.g.gain.setTargetAtTime(Math.max(0.0001, level), ctx.currentTime, 1.5);
+}
+
 export function playFrame(f) {
-  if (ready() && (f.fx || []).some((e) => e.type === "death" && e.cause === "lightning")) play("thunder");  // heard by all
+  const w = f.clock && f.clock.weather;
+  setRain(enabled ? (w === "storm" ? 0.14 : w === "rain" ? 0.08 : 0) : 0);
+  for (const e of f.fx || []) {  // heard by all
+    if ((e.type === "death" && e.cause === "lightning") || e.type === "lightning"
+        || (e.type === "ignite" && e.cause === "lightning")) play("thunder");
+    else if (e.type === "wolves") play("howl", 0.3);
+  }
+  if (ready() && (f.happenings || []).some((h) => h.kind === "eclipse" || h.kind === "comet")) play("rumble");
   if (!ready() || state.selected === null) { lastPos = null; return; }
   const me = f.npcs.find((n) => n.id === state.selected);
   if (!me) { lastPos = null; return; }
@@ -214,6 +246,10 @@ export function playFrame(f) {
       case "conceive": if (mine || atMe) play("love", 0.1); break;
       case "birth": if (mine || (e.parents || []).includes(me.id)) play("baby", byId(e.npc) || me, 0.2); break;
       case "death": if (mine) play("death"); break;
+      case "hunt": if (mine) { play("swing", 0); play(e.hit ? "hit" : "miss", 0.11); } break;
+      case "mauled": if (mine) { play("growl", 0); if (e.hit) { play("hit", 0.11); play("ouch", me, 0.16); } } break;
+      case "douse": if (mine) play("hiss", 0.1); break;
+      case "burn": if (mine) play("ouch", me, 0); break;
       default: break;
     }
   }

@@ -2,6 +2,7 @@
  * is painted by ground.js and the things standing on it by objects.js.) */
 import { AGGRO_COLOR, BUBBLE_MIN_MS, BUBBLE_TICKS, GRAVE_TICKS, MAX_GRAVES, NPC_SCALE, REPLY_DELAY_MS, TILE,
          overlay, params } from "./config.js";
+import { clearAnimals, renderAnimals } from "./animals.js";
 import { clearCull, cull } from "./cull.js";
 import { clearDrops, renderDrops } from "./drops.js";
 import { anim, newFx, playFx, poseSprite } from "./fx.js";
@@ -12,6 +13,7 @@ import { drawMinimap } from "./minimap.js";
 import { clearObjects, flickerFires, renderObjects } from "./objects.js";
 import { clearVillages, renderVillages } from "./villages.js";
 import { select } from "./panel.js";
+import { clearSky, renderSky, updateSky } from "./sky.js";
 import { villagerClick } from "./modes.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
@@ -78,9 +80,10 @@ export class WorldScene extends Phaser.Scene {
   update(t, dt) {
     if (t - this.flicker > 110) {  // campfires flicker
       this.flicker = t;
-      flickerFires(t);
+      flickerFires(this, t);
     }
     animateGround(t);
+    updateSky(this, t, dt);
     cull(this);
     if (t - this.mapped > 120) {  // (the minimap's view box follows the camera between ticks)
       this.mapped = t;
@@ -125,6 +128,8 @@ function syncWorld(sc, f) {
   clearVillages();
   clearGround(sc);
   clearCull();
+  clearAnimals();
+  clearSky();
   const cam = sc.cameras.main;
   cam.stopFollow();
   cam.setBounds(0, 0, f.width * TILE, f.height * TILE);
@@ -367,7 +372,9 @@ export function render(f, opts = {}) {
     clearBubbles();
   }
   renderNpcs(sc, f, opts);
+  renderAnimals(sc, f, opts);
   renderDrops(sc, f, opts);
+  renderSky(sc, f, opts);
   if (!opts.reverse && !opts.snap) {
     playFx(sc, f.fx || []);
     playFrame(f);
