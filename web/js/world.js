@@ -5,14 +5,14 @@ import { AGGRO_COLOR, BUBBLE_MIN_MS, BUBBLE_TICKS, GRAVE_TICKS, MAX_GRAVES, NPC_
 import { clearAnimals, renderAnimals } from "./animals.js";
 import { clearCull, cull } from "./cull.js";
 import { clearDrops, renderDrops } from "./drops.js";
-import { anim, newFx, playFx, poseSprite } from "./fx.js";
+import { anim, newFx, playFx, poseSprite, reduceMotion } from "./fx.js";
 import { endTool, hoverTile, useTool } from "./god.js";
 import { animateGround, buildGround, clearGround } from "./ground.js";
 import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
 import { drawMinimap } from "./minimap.js";
 import { clearObjects, flickerFires, renderObjects } from "./objects.js";
-import { clearVillages, renderVillages } from "./villages.js";
+import { clearVillages, renderVillages, villageColor } from "./villages.js";
 import { select } from "./panel.js";
 import { clearSky, renderSky, updateSky } from "./sky.js";
 import { currentMode, villagerClick } from "./modes.js";
@@ -206,6 +206,22 @@ function updateWorkBar(s, n, tick, opts) {
   fill.style.width = `${Math.max(0, Math.min(100, (100 * (tick + (live ? 1 : 0) - n.t0)) / span))}%`;
 }
 
+// What is in their hands for each kind of work, and what load shows on their back.
+const HELD = { chop: "h_axe", mine: "h_pick", fish: "h_rod", construct: "h_hammer", build: "h_hammer", craft: "h_hammer" };
+const LOADS = [["wood", 4, "pk_wood"], ["stone", 3, "pk_stone"], ["fish", 2, "pk_fish"], ["food", 4, "pk_food"]];
+function loadOf(inv) {
+  if (!inv) return "";
+  for (const [item, least, key] of LOADS) if ((inv[item] || 0) >= least) return key;
+  return "";
+}
+
+// The tool's swing, over one stroke (0..1): raised slowly, brought down fast.
+const STROKE_MS = { h_axe: 950, h_pick: 1050, h_hammer: 620 };
+function swingOf(s, now) {
+  const t = ((now - (s.workStart || 0)) % STROKE_MS[s.held]) / STROKE_MS[s.held];
+  return t < 0.72 ? -Math.sin((t / 0.72) * Math.PI / 2) : -1 + Math.sin(((t - 0.72) / 0.28) * Math.PI / 2) * 1.15;
+}
+
 export function renderNpcs(sc, f, opts = {}) {
   const seen = new Set();
   for (const n of f.npcs) {
@@ -215,7 +231,8 @@ export function renderNpcs(sc, f, opts = {}) {
     let s = state.sprites.get(n.id);
     const p = npcPos(n);
     const stage = stageOf(n);
-    const key = npcTexture(sc, n.look, stage);
+    const winter = !!(f.clock && f.clock.season === "winter");
+    const key = npcTexture(sc, n.look, stage, winter, n.village >= 0 ? villageColor(n.village) : -1);
     if (!s) {
       const sprite = sc.add.image(p.x, p.y, key).setOrigin(0.5, 1).setInteractive({ useHandCursor: true });
       sprite.setDepth(p.y);
@@ -223,12 +240,14 @@ export function renderNpcs(sc, f, opts = {}) {
       sprite.setScale(scaleFor(stage));
       const shadow = sc.add.image(p.x, p.y, "shadow").setTint(AGGRO_COLOR[n.traits.aggression] || 0xffffff).setAlpha(0.75);
       const spear = sc.add.image(p.x, p.y, "spear").setOrigin(0.5, 1).setAngle(16).setVisible(false);
+      const tool = sc.add.image(p.x, p.y, "h_axe").setOrigin(0.5, 0.92).setVisible(false);
+      const pack = sc.add.image(p.x, p.y, "pk_wood").setOrigin(0.5, 1).setVisible(false);
       const tag = document.createElement("div");
       tag.className = "npc-tag";
       tag.innerHTML = '<div class="icons"><span class="status"></span><span class="action"></span></div>' +
                       '<div class="work" hidden><i></i></div>';
       overlay.appendChild(tag);
-      s = { sprite, shadow, spear, tag, statusEl: tag.querySelector(".status"), actionEl: tag.querySelector(".action"),
+      s = { sprite, shadow, spear, tool, pack, held: "", carry: "", tag, statusEl: tag.querySelector(".status"), actionEl: tag.querySelector(".action"),
             workEl: tag.querySelector(".work"), workT0: -1, dying: false, key, wading: false,
             pos: { x: p.x, y: p.y },  // where the NPC stands (tweened while walking)
             fx: newFx(),              // animation offsets layered on top (see anim section)
@@ -243,7 +262,7 @@ export function renderNpcs(sc, f, opts = {}) {
       s.tween = sc.tweens.add({ targets: s.pos, x: p.x, y: p.y, ease: "Linear", duration: ms });
       // hop and waddle so walkers don't glide
       const steps = Math.max(1, Math.round(ms / 220));
-      sc.tweens.add({ targets: s.fx, walkY: { from: 0, to: -2.5 }, walkA: { from: -4, to: 4 }, ease: "Sine.inOut",
+      sc.tweens.add({ targets: s.fx, walkY: { from: 0, to: -2.5 }, walkA: { from: -2, to: 2 }, ease: "Sine.inOut",
         duration: ms / steps / 2, yoyo: true, repeat: steps - 1,
         onComplete: () => { s.fx.walkY = 0; s.fx.walkA = 0; } });
     }
@@ -263,7 +282,13 @@ export function renderNpcs(sc, f, opts = {}) {
       s.shadow.setVisible(!wading);
     }
     s.sprite.setDepth(p.y);
-    s.spear.setVisible(!!(n.inv && n.inv.spear) && n.alive);
+    // a tool in hand while working, and goods on the back when carrying a load
+    const held = n.alive ? HELD[n.doing] || "" : "";
+    if (held !== s.held) { s.held = held; s.tool.setVisible(!!held); if (held) s.tool.setTexture(held); s.workStart = sc.time.now; }
+    s.work = n.doing;
+    const carry = n.alive ? loadOf(n.inv) : "";
+    if (carry !== s.carry) { s.carry = carry; s.pack.setVisible(!!carry); if (carry) s.pack.setTexture(carry); }
+    s.spear.setVisible(!!(n.inv && n.inv.spear) && n.alive && !held);
     s.statusEl.textContent = n.status;
     updateWorkBar(s, n, f.tick, opts);
     // Re-trigger the pop animation whenever an action emoji is shown.
@@ -296,6 +321,8 @@ export function removeNpc(id) {
   s.sprite.destroy();
   s.shadow.destroy();
   s.spear.destroy();
+  s.tool.destroy();
+  s.pack.destroy();
   s.tag.remove();
   state.sprites.delete(id);
   const b = state.bubbles.get(id);
@@ -350,6 +377,22 @@ export function placeOverlays(sc) {
       const swing = s.fx.swing * 75;  // a jab/slash rotates the spear forward
       s.spear.setPosition(sp.x + 9 * s.base * s.face, sp.y - 1 - s.fx.swing * 3).setScale(s.base)
         .setFlipX(s.face < 0).setAngle((16 + swing) * s.face).setDepth(sp.depth + 0.1);
+    }
+    if (s.tool.visible) {
+      const hand = [sp.x + 6.5 * s.base * s.face, sp.y - 9 * s.base];
+      let angle;
+      if (s.held === "h_rod") angle = 38 + 3 * Math.sin(now / 700 + s.phase);  // a line out, waiting
+      else {
+        const k = reduceMotion ? 0 : swingOf(s, now);  // -1 raised high .. +0.15 struck
+        angle = 25 + k * 80;
+        if (k > -0.1 && s.held !== "h_hammer") sp.y += 0.5 * s.base;  // a dip into each blow
+      }
+      s.tool.setPosition(hand[0], hand[1]).setScale(s.base).setFlipX(s.face < 0).setAngle(angle * s.face)
+        .setDepth(sp.depth + 0.1).setAlpha(sp.alpha);
+    }
+    if (s.pack.visible) {
+      s.pack.setPosition(sp.x - 3 * s.base * s.face, sp.y - 16 * s.base).setScale(s.base * 0.85)
+        .setFlipX(s.face < 0).setAngle(sp.angle).setDepth(sp.depth - 0.1).setAlpha(sp.alpha);
     }
     const [x, y] = toScreen(sp.x, sp.y - sp.displayHeight - 2);
     const visible = x > -40 && y > -40 && x < c.width + 40 && y < c.height + 80;

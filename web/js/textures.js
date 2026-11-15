@@ -468,6 +468,24 @@ export function makeTextures(scene) {
   px(2, 12, 3, 1, 0x3d2614);
   save("spear", 7, 20);
 
+  // --- tools in hand while working (drawn upright: the grip at the bottom) ---------------
+  const HAFT = 0x7a5230, IRON = 0x9a9aa4, EDGE = 0xe0e0e6;
+  sprite("h_axe", 10, 15, [[4, 3, 2, 11, HAFT], [6, 2, 3, 5, IRON], [2, 3, 2, 2, IRON]], [[8, 2, 1, 5, EDGE]]);
+  sprite("h_pick", 12, 15, [[5, 3, 2, 11, HAFT], [1, 2, 10, 2, IRON], [1, 4, 1, 1, IRON], [10, 4, 1, 1, IRON]],
+    [[1, 2, 10, 1, EDGE]]);
+  sprite("h_hammer", 10, 14, [[4, 5, 2, 8, HAFT], [2, 2, 6, 3, IRON]], [[2, 2, 6, 1, EDGE]]);
+  px(1, 0, 1, 20, 0xb08a52); px(0, 14, 3, 3, OUTLINE); px(1, 15, 1, 1, 0xcfcfd6);
+  save("h_rod", 3, 20);
+  // --- goods carried on the back ----------------------------------------------------------
+  sprite("pk_wood", 14, 9, [[1, 1, 12, 2, 0x8a5a30], [0, 4, 12, 2, 0x7a4a26], [2, 7, 12, 1, 0x8a5a30]],
+    [[1, 1, 1, 2, 0xd9b07a], [0, 4, 1, 2, 0xd9b07a], [2, 7, 1, 1, 0xd9b07a], [5, 1, 4, 1, 0xa8754a]]);
+  sprite("pk_stone", 12, 9, [[1, 2, 10, 6, 0xb59a6a], [4, 0, 4, 2, 0xb59a6a]],
+    [[2, 2, 3, 2, 0x9a9aa4], [6, 3, 3, 2, 0x8a8a94], [3, 5, 4, 2, 0xa8a8b0], [4, 0, 4, 1, 0x7a6a4a]]);
+  sprite("pk_food", 12, 8, [[1, 3, 10, 5, 0xa8783e], [0, 2, 12, 1, 0x8a5a2a]],
+    [[2, 1, 2, 2, 0xd23a3a], [5, 0, 2, 2, 0xe8483a], [8, 1, 2, 2, 0x3f8a46], [2, 5, 8, 1, 0x8a5a2a]]);
+  sprite("pk_fish", 12, 9, [[1, 1, 9, 3, 0x7aa8c8], [2, 5, 9, 3, 0x6a98b8]],
+    [[1, 1, 1, 1, 0x222222], [10, 6, 1, 1, 0x222222], [8, 1, 2, 3, 0x5a88a8], [2, 5, 2, 3, 0x4a7898]]);
+
   g.lineStyle(2, 0xffe08a, 1); g.strokeEllipse(12, 5, 20, 8);
   save("ring", 24, 10);
   g.lineStyle(2, 0xffffff, 1); g.strokeRect(1, 1, TILE - 2, TILE - 2);
@@ -566,13 +584,21 @@ export const CLOTH = { red: 0xb83a3a, blue: 0x3a64b8, green: 0x3f8a46, ochre: 0x
                 teal: 0x2f8f8a, grey: 0x7a7a80, cream: 0xe8dcc0 };
 export const DEFAULT_LOOK = { skin: "fair", hair: "brown", hairstyle: "short", clothes: "tunic", color: "blue", hat: "none" };
 export const NPC_W = 20, NPC_H = 26;
-export const lookKey = (look, stage) =>
-  `npc:${stage}:${look.skin}:${look.hair}:${look.hairstyle}:${look.clothes}:${look.color}:${look.hat}`;
+export const lookKey = (look, stage, winter = false, band = -1) =>
+  `npc:${stage}:${look.skin}:${look.hair}:${look.hairstyle}:${look.clothes}:${look.color}:${look.hat}:${winter ? 1 : 0}:${band}`;
 
-export function npcTexture(scene, rawLook, stage) {
+// The standing texture's key is returned; its two walking frames are made with it
+// under `${key}:w1` and `${key}:w3` (left foot, then right foot forward).
+// winter: a scarf and longer sleeves. band: the village's colour, on an armband.
+export function npcTexture(scene, rawLook, stage, winter = false, band = -1) {
   const look = { ...DEFAULT_LOOK, ...(rawLook || {}) };
-  const key = lookKey(look, stage);
+  const key = lookKey(look, stage, winter, band);
   if (scene.textures.exists(key)) return key;
+  for (const step of [0, 1, 3]) drawNpc(scene, look, stage, winter, band, step, step ? `${key}:w${step}` : key);
+  return key;
+}
+
+function drawNpc(scene, look, stage, winter, band, step, key) {
 
   // Parts are collected first so every outlined part gets its dark border
   // drawn underneath all fills (black survives at the silhouette edges only).
@@ -584,13 +610,17 @@ export function npcTexture(scene, rawLook, stage) {
   const denim = 0x3a4f7a, cream = 0xe8dcc0, fur = 0x8b6b4a;
   const pants = look.clothes === "overalls" ? denim : shade(cloth, 0.5);
 
-  // legs + feet
-  if (look.clothes !== "robe") { part(6, 18, 3, 5, pants); part(11, 18, 3, 5, pants); }
-  part(6, 23, 3, 1, 0x2a1d14); part(11, 23, 3, 1, 0x2a1d14);
+  // legs + feet: mid-stride one foot is lifted (drawn a pixel higher and shorter)
+  // and the arms swing the other way
+  const lift = (side) => (step === 1 && side === 0) || (step === 3 && side === 1) ? 1 : 0;
+  const [l0, l1] = [lift(0), lift(1)];
+  if (look.clothes !== "robe") { part(6, 18, 3, 5 - l0, pants); part(11, 18, 3, 5 - l1, pants); }
+  part(6, 23 - l0, 3, 1, 0x2a1d14); part(11, 23 - l1, 3, 1, 0x2a1d14);
   // arms (sleeves) + hands
-  const sleeve = { vest: cream, furs: fur }[look.clothes] ?? cloth;
-  part(3, 10, 2, 6, sleeve); part(15, 10, 2, 6, sleeve);
-  part(3, 16, 2, 1, skin); part(15, 16, 2, 1, skin);
+  const sleeve = winter && look.clothes === "vest" ? cloth : ({ vest: cream, furs: fur }[look.clothes] ?? cloth);
+  const [a0, a1] = [l1 - l0, l0 - l1];  // the arm opposite the lifted foot swings forward (down a pixel)
+  part(3, 10 + a0, 2, 6, sleeve); part(15, 10 + a1, 2, 6, sleeve);
+  part(3, 16 + a0, 2, 1, winter ? shade(sleeve, 0.7) : skin); part(15, 16 + a1, 2, 1, winter ? shade(sleeve, 0.7) : skin);
   // torso
   switch (look.clothes) {
     case "robe":
@@ -613,6 +643,8 @@ export function npcTexture(scene, rawLook, stage) {
       part(5, 10, 10, 8, cloth); part(5, 15, 10, 1, 0x4a3220, false); part(9, 15, 2, 1, 0xd9b45a, false);
       part(8, 10, 4, 1, shade(cloth, 0.75), false);
   }
+  // which village they belong to, on an armband
+  if (band >= 0) part(15, 12 + a1, 2, 1, band, false);
   // head + face
   part(7, 3, 6, 7, skin);
   part(8, 6, 1, 1, 0x222222, false); part(11, 6, 1, 1, 0x222222, false);
@@ -632,14 +664,19 @@ export function npcTexture(scene, rawLook, stage) {
     default: break; // bald
   }
   // hats
-  const band = look.color === "red" ? 0xf2f2f2 : 0xd23a3a;
+  const ribbon = look.color === "red" ? 0xf2f2f2 : 0xd23a3a;
   switch (look.hat) {
     case "straw": part(4, 3, 12, 1, 0xe3c26a); part(7, 1, 6, 2, 0xd4b052); part(7, 2, 6, 1, 0x8a3b1e, false); break;
     case "hood": part(6, 2, 8, 2, shade(cloth, 0.8)); part(6, 4, 1, 6, shade(cloth, 0.8)); part(13, 4, 1, 6, shade(cloth, 0.8)); break;
-    case "headband": part(7, 4, 6, 1, band, false); break;
-    case "feather": part(7, 4, 6, 1, band, false); part(13, 0, 1, 4, 0xf2f2f2); part(13, 0, 1, 1, 0xd23a3a, false); break;
+    case "headband": part(7, 4, 6, 1, ribbon, false); break;
+    case "feather": part(7, 4, 6, 1, ribbon, false); part(13, 0, 1, 4, 0xf2f2f2); part(13, 0, 1, 1, 0xd23a3a, false); break;
     case "flower": part(11, 2, 2, 2, 0xff7ab0); part(11, 2, 1, 1, 0xffe066, false); break;
     default: break;
+  }
+  // winter: a scarf wound round the neck, its end hanging down
+  if (winter) {
+    const wool = look.color === "red" ? 0xe8dcc0 : 0xc8463a;
+    part(6, 9, 8, 2, wool); part(12, 11, 2, 3, wool); part(12, 13, 2, 1, shade(wool, 0.75), false);
   }
   // elders lean on a walking stick
   if (stage === "elder") { part(18, 12, 1, 12, 0x6b4a2c); part(17, 12, 2, 1, 0x6b4a2c); }
@@ -649,7 +686,6 @@ export function npcTexture(scene, rawLook, stage) {
   for (const p of parts) { g.fillStyle(p.c, 1); g.fillRect(p.x, p.y, p.w, p.h); }
   g.generateTexture(key, NPC_W, NPC_H);
   g.destroy();
-  return key;
 }
 
 export function portrait(key) {

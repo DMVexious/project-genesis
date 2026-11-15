@@ -18,12 +18,21 @@ export function anim(sc, s, props, duration, opts = {}) {
     delay: opts.delay || 0, ease: opts.ease || "Quad.out", onComplete: opts.onComplete });
 }
 
+const WALK = ["", ":w1", "", ":w3"];
+
 // Applied every frame: position + animation offsets + idle breathing.
 export function poseSprite(sc, s, now) {
   const fx = s.fx, sp = s.sprite;
   const breath = s.dying || reduceMotion ? 0
     : s.sleeping ? 0.045 * Math.sin(now / 650 + s.phase)   // slow, deep breaths while asleep
     : 0.018 * Math.sin(now / 420 + s.phase);
+  // the walk cycle: stand, left foot, stand, right foot, while a step is under way
+  const walking = s.tween && s.tween.isPlaying() && !s.dying && !reduceMotion;
+  const frame = walking ? WALK[Math.floor(now / 140 + s.phase) % 4] : "";
+  if (s.frame !== frame || s.frameKey !== s.key) {
+    s.frame = frame; s.frameKey = s.key;
+    sp.setTexture(s.key + frame);
+  }
   sp.setPosition(s.pos.x + fx.x, s.pos.y + fx.y + fx.walkY)
     .setScale(s.base * fx.sx * (1 - breath * 0.4), s.base * fx.sy * (1 + breath))
     .setAngle(fx.angle + fx.walkA)
