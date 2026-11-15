@@ -62,6 +62,7 @@ body[data-mode="god"]:not(.playing) #godbar { display: flex; }
 #gb-tools button.dear { opacity: .45; }
 .gt-emoji { font-size: 15px; }
 .gt-cost { display: none; font-size: 10px; color: #f6d77a; }
+.gt-key { font: 600 9px var(--mono, monospace); color: var(--muted); border: 1px solid #4a3d30; border-radius: 3px; padding: 0 3px; line-height: 12px; }
 #godbar.deity .gt-cost { display: inline; }
 #gb-hint { font-size: 11px; }
 body.god-tool[data-mode="god"] #game { cursor: crosshair; }

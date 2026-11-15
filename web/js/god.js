@@ -10,6 +10,7 @@ import { $, TILE } from "./config.js";
 import { floatText } from "./fx.js";
 import { send } from "./net.js";
 import { state } from "./state.js";
+import { currentMode } from "./modes.js";
 
 const GROUPS = [["land", "🌳 Land"], ["gifts", "🎁 Gifts"], ["sky", "⛅ Sky"], ["build", "🏗️ Build"],
                 ["life", "🦌 Life"], ["events", "📜 Events"]];
@@ -32,9 +33,9 @@ function build() {
 
 function showGroup() {
   for (const b of $("gb-groups").children) b.classList.toggle("on", b.dataset.group === g.group);
-  $("gb-tools").innerHTML = powers().filter((p) => p.group === g.group).map((p) => `
-    <button data-power="${p.key}" title="${esc(p.blurb)}${p.paint ? " (drag to paint)" : ""}">
-      <span class="gt-emoji">${p.emoji}</span><span class="gt-label">${esc(p.label)}</span>
+  $("gb-tools").innerHTML = powers().filter((p) => p.group === g.group).map((p, i) => `
+    <button data-power="${p.key}" title="${esc(p.blurb)}${p.paint ? " (drag to paint)" : ""}${i < 9 ? ` · Shift+${i + 1}` : ""}">
+      ${i < 9 ? `<span class="gt-key">${i + 1}</span>` : ""}<span class="gt-emoji">${p.emoji}</span><span class="gt-label">${esc(p.label)}</span>
       <span class="gt-cost">${p.cost}</span></button>`).join("");
   markTools();
 }
@@ -48,7 +49,7 @@ function markTools() {
   $("godbar").classList.toggle("deity", g.deity);
   const hint = g.tool
     ? `${g.tool.emoji} ${g.tool.blurb}: click the ground${g.tool.paint ? " (drag to paint)" : ""} · right-drag moves the view · Esc puts it down`
-    : "Pick a power, then click the ground. Click a villager for heal, feed, bless, smite or a word from the sky.";
+    : "Pick a power (Q/E: another group, Shift+number: a power), then click the ground. Click a villager for heal, feed, bless, smite or a word from the sky.";
   $("gb-hint").textContent = hint;
 }
 
@@ -128,7 +129,24 @@ export function toast(text, ok = true) {
   toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
 }
 
+// Keys, in God mode: Q and E go through the groups, Shift+1..9 picks a power in the open one.
+function godKeys(e) {
+  if (currentMode() !== "god" || state.possessed != null || !g.built) return;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === "q" || k === "e") {
+    const i = GROUPS.findIndex(([key]) => key === g.group);
+    g.group = GROUPS[(i + (k === "e" ? 1 : GROUPS.length - 1)) % GROUPS.length][0];
+    showGroup();
+    e.preventDefault();
+  } else if (e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    const p = powers().filter((p) => p.group === g.group)[Number(e.code.slice(5)) - 1];
+    if (p) { pickTool(p.key); e.preventDefault(); }
+  }
+}
+
 export function initGodbar() {
+  document.addEventListener("keydown", godKeys);
   $("gb-groups").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-group]");
     if (b) { g.group = b.dataset.group; showGroup(); }
