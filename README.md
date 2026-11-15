@@ -4,7 +4,8 @@
 
 <p align="center">
   <b>A village of LLM-driven NPCs that forage, build, trade, fight, fall in love, grow old and die.</b><br>
-  Nothing is scripted. A deterministic engine owns the world, and a small local LLM only ever picks from the engine's list of legal moves.
+  Nothing is scripted. A deterministic engine owns the world, and a small local LLM only ever picks from the engine's list of legal moves.<br>
+  Watch them, play god over their land and sky, or step into one of their bodies and live among them.
 </p>
 
 <p align="center">
@@ -51,7 +52,51 @@ Every line above was written by a 2B-parameter model running locally (`bonsai-2:
 | <img src="docs/media/village.gif" alt="Time-lapse: an empty field fills with huts and campfires" width="270"> | <img src="docs/media/talk.gif" alt="A crowd at a campfire trading lines in speech bubbles" width="270"> | <img src="docs/media/life.gif" alt="The camera follows one villager through an argument" width="270"> |
 | The first 2,000 ticks of a run. Every hut and campfire is a villager's own decision | Eleven villagers at one campfire. Each bubble comes straight from the LLM, shaped by remembered grudges | Following Elaox while the belief that names are borrowed from the dead turns into an argument |
 
-All clips are the simulation running live on a local model through Ollama. No events are scripted.
+| A day's work | Playing god | After dark |
+| :---: | :---: | :---: |
+| <img src="docs/media/work.gif" alt="Villagers walk to work with axes, hammers and loads of wood on their backs" width="270"> | <img src="docs/media/god.gif" alt="A row of trees, a pond, a stone house and a deer appear as rain starts to fall" width="270"> | <img src="docs/media/night.gif" alt="Night falls on a village: windows glow, smoke rises and the campfire lights the ground" width="270"> |
+| Tools swing, loads ride on backs, and every look has its own walk | Trees, a pond, a house, a deer, then rain, all from the god bar | Windows light up, chimneys smoke and the hearth holds back the dark |
+
+The clips in the first row are the simulation running live on a local model through Ollama. The second row was recorded with the heuristic brain. No events are scripted, except the god powers you use.
+
+## What you can do
+
+The bar at the top of the world has three modes (keys **1**, **2**, **3**):
+
+* **👁 Watch.** Click a villager to follow them. The side panel shows their stats, skills, inventory, family and what they're thinking. You hear what they hear.
+* **⚡ God.** A bar of powers runs along the bottom:
+  * *Land:* paint trees, bushes and rocks, dig water, fill it in, or clear the ground.
+  * *Gifts:* food, wood and stone.
+  * *Sky:* rain, sun, storms and snow, a lightning strike or a fire.
+  * *Build:* any building, finished at once.
+  * *Life:* a new settler, deer, rabbits or a wolf pack.
+  * *Events:* a wildfire, a plague, a good harvest, a trader, migrants, a stranger, wolves, an omen or a flood.
+
+  Click a villager to heal, feed, bless or smite them, or type to speak to them from the sky. They answer, and they remember.
+* **🎮 Play.** Become a villager. Click the ground to walk and things to use them, and click people to talk, trade, give, court or hit them. Type what you say: villagers answer in their own voice with the bigger talking model, and they speak to you first too.
+
+**Sandbox or Deity.** Pick on the start screen. In Sandbox every power is free. In Deity mode powers cost **Faith**, which you earn from prayers at shrines and from villagers who have seen your works or heard your voice.
+
+**Saving.** 💾 in the panel names a save, **Ctrl+S** saves at once, and the start screen lists your saves to load or delete. The world also saves itself every 1,200 ticks. Saves live in `~/.genesis/saves` (`--save-dir`, `--autosave`).
+
+| Keys | |
+|---|---|
+| Drag, **WASD**, arrows | move the view; scroll to zoom |
+| **Space** · **+** **−** | pause · speed |
+| **F** · **M** · **H** | follow the selected villager · minimap · help |
+| **,** **.** · **Enter** · **Esc** | step back and forth through the replay · play it · back to live |
+| **Ctrl+S** | quick save |
+| **Esc** (God / Play) | put the power down · leave the body |
+
+## A living world
+
+* **Day and night.** Night falls slowly. Campfires, homes and shrines hold back the dark, windows glow, and wolves' eyes shine at the edge of the light.
+* **Seasons and weather.** Six days each of spring, summer, autumn and winter. Trees turn gold and drop their leaves, the ground frosts over, and villagers wrap up in scarves. Rain, storms with lightning, snow, fog and droughts come and go, and change how crops grow and how people feel.
+* **Fire and sickness.** Lightning or a careless hearth can start a wildfire that spreads through dry woods until it burns out or someone douses it. Fevers pass from person to person, and elders teach the young what they know.
+* **Wild animals.** Deer and rabbits to hunt, and wolf packs that come in at night.
+* **Happenings.** A director keeps the story moving: a trader arrives, migrants ask to settle, a festival, an omen in the sky. Big news shows across the top of the screen.
+* **Seen up close.** Every villager has a walk cycle, swings the tool for the job (axe, pickaxe, hammer, fishing rod) and carries a full load of wood, stone, fish or food on their back. Building sites go from stakes and string to a frame to walls. Every village flies a banner in its own colour, and the people wear its colour on an armband. What villagers are doing shows in small pixel icons over their heads.
+* **The side panel** has tabs. *World* charts people, food and believers over time and lists conversations. *Villages* shows each village's buildings, store, neighbours, people and beliefs. *People* holds the inspector and a family tree you can click through. *Chronicle* lists what happened. *Settings* has speech bubbles, labels and volume. Rest the pointer on anything in the world to see what it is and whose it is.
 
 ## The LLM can't cheat
 
@@ -116,6 +161,12 @@ flowchart LR
 | 2 Local web UI | ✅ Phaser world, procedural pixel art, emojis, 14-word speech bubbles (with replies) that fade 4 ticks later |
 | 3 RAG & genetics | ✅ ChromaDB memories feed interaction prompts; 50/50 trait splicing with 5% mutation |
 | 4 Tauri packaging | ✅ Tauri v2 shell + orchestrator sidecar → NSIS installer |
+| M0 Foundation | ✅ One Python engine with a content registry, ES-module front end, pacing, items, ageing, skills |
+| M1 Maps | ✅ Nine kinds of ground, seven map presets, start screen with previews, minimap |
+| M2 Villages | ✅ Villages with land, stores and relations; building sites; stone, fish, saplings, tools; paths |
+| M3 A living world | ✅ Day and night, seasons, weather, fire, fever, wild animals, an event director |
+| M4 The player | ✅ God powers, Sandbox and Deity modes with Faith, playing as a villager, saved games |
+| M5 Polish | ✅ Walk cycles, tools and loads, building stages, lit windows, banners, pixel icons, stacked bubbles, panel tabs and charts |
 
 ## Quick start
 
@@ -138,6 +189,8 @@ If [Ollama](https://ollama.com) is installed, it's used automatically with no se
 Common flags (both entry points): `--seed`, `--width`, `--height`, `--population`,
 `--map <preset>`, `--brain auto|llm|ollama|heuristic`, `--llm-url`,
 `--memory auto|chromadb|simple`, `--memory-path DIR` (persist ChromaDB).
+Server only: `--model`, `--talk-model`, `--best-of`, `--tick-ms`, `--paused`, `--autostart`,
+`--save-dir DIR` and `--autosave TICKS` (0 turns it off).
 
 To film it: `?bare=1` hides the panels, `?zoom=2.5` sets the zoom, `?center=<x>,<y>` points the camera at a tile and `?follow=<npc id>` follows a villager.
 
@@ -359,8 +412,9 @@ practice: ten felled trees make a level-3 woodcutter, a lifetime at it a master.
 
 Every NPC inherits an appearance from its parents the same way as its traits (50/50 per slot,
 5% mutation): skin tone, hair colour and style, outfit (tunic, robe, vest, furs, overalls),
-outfit colour and hat. The front end draws each combination procedurally; children are smaller
-and elders turn white-haired and walk with a stick. The coloured ring under each NPC's feet shows
+outfit colour and hat. The front end draws each combination procedurally, with two stride frames
+for walking, a winter version with a scarf, and an armband in the village's colour. Children are
+smaller, and elders turn white-haired and walk with a stick. The coloured ring under each NPC's feet shows
 its temperament, and a gravestone marks where someone died for about a minute.
 URL options: `?zoom=2.5` sets the starting zoom, `?follow=<npc id>` follows an NPC.
 
