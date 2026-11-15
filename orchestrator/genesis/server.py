@@ -318,13 +318,14 @@ def create_app(args) -> FastAPI:
         hub = Hub(sim, args.tick_ms, menu=not args.autostart, args=args)
         hub.installed = await installed_models(args.ollama_url)
         hub.paused = hub.paused or args.paused
-        if args.resume:  # carry on a saved world (the autosave by default) instead of the start screen
-            if saves.exists(hub.save_dir, args.resume):
-                await hub._cmd_load({"name": args.resume}, None)
-                hub.paused = args.paused
-                log.info("resumed '%s' at tick %d", args.resume, sim.state["tick"])
+        resume = getattr(args, "resume", None)
+        if resume:  # carry on a saved world (the autosave by default) instead of the start screen
+            if saves.exists(hub.save_dir, resume):
+                await hub._cmd_load({"name": resume}, None)
+                hub.paused = bool(getattr(args, "paused", False))
+                log.info("resumed %r at tick %d", resume, sim.state["tick"])
             else:
-                log.warning("no save called '%s' in %s: starting afresh", args.resume, hub.save_dir)
+                log.warning("no save called %r in %s: starting afresh", resume, hub.save_dir)
         app.state.hub = hub
         task = asyncio.create_task(hub.run())
         yield
