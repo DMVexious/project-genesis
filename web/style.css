@@ -110,6 +110,12 @@ body.replaying #game canvas { filter: sepia(.25) saturate(.9); }
   width: 360px; flex: none; background: var(--panel); border-left: 2px solid #000;
   padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
 }
+/* the tab on the stage's right edge that folds the panel away (P) */
+#panel-toggle { position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 6;
+  width: 18px; height: 56px; padding: 0; border: 1px solid #4a3d30; border-right: none; border-radius: 6px 0 0 6px;
+  background: rgba(23, 19, 15, .86); color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+#panel-toggle:hover { color: var(--accent); background: var(--panel); }
+body.panel-off #panel { display: none; }
 /* children keep their size; the panel scrolls instead (else a long chronicle squashes the list) */
 #panel > * { flex-shrink: 0; }
 #panel header { display: flex; align-items: center; justify-content: space-between; }

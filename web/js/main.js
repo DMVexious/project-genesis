@@ -34,6 +34,7 @@ document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || menuOpen()) return;
   if (playing() && e.key === "Escape") return;  // (Esc leaves the body: see play.js)
   if (e.key === "m" || e.key === "M") toggleMinimap();
+  else if ((e.key === "p" || e.key === "P") && !e.ctrlKey && !e.metaKey) togglePanel();
   else if (e.key === "," || e.key === "<") {
     e.preventDefault();
     if (e.shiftKey || e.key === "<") $("tl-rev").click(); else $("tl-back").click();
@@ -54,6 +55,17 @@ $("btn-step").onclick = () => send({ cmd: "step" });
 $("speed").oninput = (e) => send({ cmd: "speed", tick_ms: 1050 - Number(e.target.value) });
 $("btn-reset").onclick = () => openMenu(false);
 $("btn-map").onclick = toggleMinimap;
+
+// The side panel folds away for a full-screen world (the ‹ › tab or P); remembered per browser.
+function togglePanel(off = !document.body.classList.contains("panel-off")) {
+  document.body.classList.toggle("panel-off", off);
+  $("panel-toggle").textContent = off ? "‹" : "›";
+  $("panel-toggle").title = off ? "Show the side panel (P)" : "Hide the side panel for a full-screen view (P)";
+  try { localStorage.setItem("genesis.panelOff", off ? "1" : ""); } catch (e) { /* storage off */ }
+  window.dispatchEvent(new Event("resize"));  // Phaser and the chart refit to the wider stage now
+}
+$("panel-toggle").onclick = () => togglePanel();
+try { if (localStorage.getItem("genesis.panelOff") === "1") togglePanel(true); } catch (e) { /* storage off */ }
 $("npc-list").onclick = (e) => {
   const li = e.target.closest("li[data-id]");
   if (li) select(Number(li.dataset.id));
