@@ -35,12 +35,13 @@ const LOOK = {
   fruit: { tex: () => "tree_apple", spent: () => "tree_apple_bare", sway: 2, sizes: true },
   cactus: { tex: () => "cactus", spent: () => "cactus_bare", sway: 3 },
   mushroom: { tex: () => "mushroom", spent: () => "mushroom_bare", sway: 2 },
-  hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}`, light: 1.6 },
+  // windows: [x, y, w, h] in the picture, lit after dark; chimney: [x, y] where smoke rises
+  hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}`, light: 1.6, windows: [[7, 21, 4, 4], [20, 22, 3, 3]], chimney: [15, 3] },
   farm: { tex: () => "farm", spent: () => "farm_growing", flat: true },
   fire: { tex: () => "fire0", fire: true, light: 4.5 },
   blaze: { tex: () => "blaze0", blaze: true, light: 5.5 },
   sapling: { tex: () => "sapling", sway: 3 },
-  house: { tex: () => "house", light: 2 },
+  house: { tex: () => "house", light: 2, windows: [[5, 23, 5, 5], [22, 23, 5, 5]], chimney: [23, 2] },
   storehouse: { tex: () => "storehouse" },
   well: { tex: () => "well" },
   workshop: { tex: () => "workshop" },
@@ -54,6 +55,7 @@ let sites = new Set();    // building sites with a progress bar showing
 const fires = new Set();   // campfires (flickering)
 const blazes = new Set();  // fires spreading through the trees
 export const lights = new Set();  // whatever lights up the dark around it (see sky.js)
+const homes = new Set();  // huts and houses: lit windows at night, smoke from the chimney
 let shownKey = "", shownRows = null;
 
 const picture = (look, o, ground, h) => inSeason(o.spent && look.spent ? look.spent(ground, h) : look.tex(ground, h));
@@ -69,6 +71,7 @@ export function clearObjects() {
   fires.clear();
   blazes.clear();
   lights.clear();
+  homes.clear();
   sites = new Set();
   shownKey = "";
   shownRows = null;
@@ -80,6 +83,7 @@ function take(sc, i, rec, live) {
   fires.delete(rec);
   blazes.delete(rec);
   lights.delete(rec);
+  homes.delete(rec);
   untrack(rec.img);
   if (rec.glow) { untrack(rec.glow); rec.glow.destroy(); }
   if (live) sc.tweens.add({ targets: rec.img, alpha: 0, duration: 300, onComplete: () => rec.img.destroy() });
@@ -129,6 +133,12 @@ function put(sc, f, x, y, i, ch, have, live) {
     rec.phase = (h % 97) / 10;
   }
   if (rec.light) lights.add(rec);
+  if (look.windows) {
+    rec.look = look;
+    rec.lit = (h >>> 4) % 6 !== 0;  // (now and then a home stays dark: nobody in, or all asleep)
+    rec.smokeAt = 0;
+    homes.add(rec);
+  }
   objs.set(i, rec);
   if (live) {  // newly built or grown: it rises into place
     const sx = img.scaleX, sy = img.scaleY;
@@ -176,6 +186,12 @@ function updateSites(sc, f) {
     }
     if (rec.progress !== progress) {
       rec.progress = progress;
+      const stage = progress < 34 ? "site0" : progress < 67 ? "site" : "site2";  // marked out, framed, walled
+      if (rec.img.texture.key !== stage) {
+        rec.img.setTexture(stage);
+        if (rec.stage) sc.tweens.add({ targets: rec.img, scaleY: { from: 0.85, to: 1 }, duration: 320, ease: "Back.out" });
+        rec.stage = stage;
+      }
       const bx = x * TILE + 1, by = y * TILE - 20;
       rec.bar.clear().fillStyle(0x140e09, 0.85).fillRect(bx, by, TILE - 2, 5)
         .fillStyle(0xf0cf5c, 1).fillRect(bx + 1, by + 1, Math.round((TILE - 4) * progress / 100), 3);
@@ -210,6 +226,38 @@ export function flickerFires(sc, t) {
       .setDepth(rec.img.depth + 1).setScale(1.2);
     sc.tweens.add({ targets: puff, y: puff.y - 34 - Math.random() * 20, x: puff.x + 6 + Math.random() * 10,
       scale: 3.4, alpha: { from: 0.9, to: 0 }, duration: 1800, ease: "Sine.out", onComplete: () => puff.destroy() });
+  }
+}
+
+// Homes come alive: after dark their windows glow (drawn above the night, so they
+// shine through it), and smoke drifts from the chimney, more in the cold and at night.
+let panes = null;
+export function liveHomes(sc, t, dark) {
+  if (!panes || panes.scene !== sc) panes = sc.add.graphics().setDepth(15000.5).setBlendMode(Phaser.BlendModes.ADD);
+  panes.clear();
+  if (!homes.size) return;
+  const view = sc.cameras.main.worldView;
+  const glow = Math.min(1, Math.max(0, (dark - 0.12) * 2.4));
+  const cold = season === "winter" || season === "autumn";
+  for (const rec of homes) {
+    const img = rec.img;
+    if (!img.visible || !view.contains(img.x, img.y - 12)) continue;
+    const left = img.x - img.width / 2, top = img.y - img.height;
+    if (glow > 0 && rec.lit) {
+      const a = glow * (0.85 + 0.15 * Math.sin(t / 900 + rec.x * 1.7));
+      for (const [x, y, w, h] of rec.look.windows) {
+        panes.fillStyle(0xffb347, a * 0.28).fillRect(left + x - 2, top + y - 2, w + 4, h + 4);
+        panes.fillStyle(0xffd27a, a).fillRect(left + x, top + y, w, h);
+      }
+    }
+    if (t < rec.smokeAt) continue;
+    const busy = cold || dark > 0.25;
+    rec.smokeAt = t + (busy ? 1100 : 2600) + Math.random() * 1400;
+    if (!busy && Math.random() < 0.6) continue;
+    const [cx, cy] = rec.look.chimney;
+    const puff = sc.add.image(left + cx, top + cy, "smoke").setDepth(img.depth + 1).setScale(0.5).setAlpha(0);
+    sc.tweens.add({ targets: puff, y: puff.y - 26 - Math.random() * 12, x: puff.x + 4 + Math.random() * 8,
+      scale: 1.6, alpha: { from: 0.55, to: 0 }, duration: 3200, ease: "Sine.out", onComplete: () => puff.destroy() });
   }
 }
 

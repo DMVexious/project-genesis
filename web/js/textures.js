@@ -414,7 +414,7 @@ export function makeTextures(scene) {
   const STONE = 0x9a958a, STONE_DK = 0x77736a, STONE_HI = 0xb4afa3, WOOD = 0x8a5a32, WOOD_DK = 0x6b4424;
   // a stone house: grey walls, a shingle roof, a chimney, warm windows
   solids([[3, 18, 26, 16, STONE], [21, 3, 4, 10, STONE_DK]]);
-  for (let y = 20; y < 33; y += 4) for (let x = 3 + ((y / 4) % 2) * 3; x < 28; x += 6) px(x, y, 5, 3, STONE_HI);
+  for (let y = 20; y < 33; y += 4) for (let x = 3 + ((y / 4) % 2) * 3; x < 28; x += 6) px(x, y, Math.min(5, 29 - x), Math.min(3, 34 - y), STONE_HI);
   tri(0, 20, 16, 4, 32, 20, OUTLINE); tri(2, 19, 16, 6, 30, 19, 0x5a3a26); tri(7, 17, 16, 9, 25, 17, 0x6d4a32);
   px(21, 3, 4, 2, 0x4c4843);
   px(13, 24, 6, 10, 0x3d2614); px(17, 29, 1, 1, 0xc89a62);
@@ -453,6 +453,27 @@ export function makeTextures(scene) {
   solids([[1, 25, 9, 3, 0xd9b47a], [17, 24, 4, 4, STONE], [22, 25, 4, 3, STONE_DK]]);
   px(1, 26, 9, 1, 0xb08a52);
   save("site", 28, 30);
+  // ...before that, only stakes and a string marking the ground out, and the first loads brought
+  solids([[3, 19, 2, 9, 0xb08850], [23, 19, 2, 9, 0xb08850]]);
+  px(4, 20, 20, 1, 0xe8dcc0); px(4, 27, 20, 1, 0x7a5a36);
+  solids([[6, 24, 10, 2, 0xd9b47a], [7, 22, 8, 2, 0xc89a62], [17, 24, 4, 4, STONE], [21, 25, 4, 3, STONE_DK]]);
+  px(6, 24, 1, 2, 0xf0d8a8); px(7, 22, 1, 2, 0xf0d8a8);
+  save("site0", 28, 30);
+  // ...and nearly done: walls boarded halfway up, the roof beams on
+  solids([[4, 6, 2, 22, 0xb08850], [22, 6, 2, 22, 0xb08850], [4, 16, 20, 12, 0xc89a62]]);
+  for (let x = 7; x < 23; x += 4) px(x, 16, 1, 12, 0x9a7444);
+  tri(1, 8, 14, 0, 27, 8, OUTLINE); tri(3, 7, 14, 2, 25, 7, 0xb08850); tri(8, 6, 14, 3, 20, 6, 0x6a5232);
+  px(4, 10, 20, 2, 0xc89a62); px(11, 20, 6, 8, 0x3d2614);
+  solids([[24, 25, 4, 3, STONE]]);
+  save("site2", 28, 30);
+  // a village's banner on its pole, waving (the flag is white: tinted with the village's colour)
+  px(1, 0, 2, 2, 0xd9b45a); px(1, 2, 2, 26, OUTLINE); px(1, 2, 1, 26, 0x7a5230);
+  save("banner_pole", 4, 28);
+  for (const [k, sag] of [["banner0", 0], ["banner1", 1]]) {
+    px(0, 0, 12, 9 - sag, OUTLINE); px(0, 1, 11, 7 - sag, 0xffffff); 
+    px(2, 2 + sag, 7, 1, 0xd8d8d8); px(0, 1, 1, 7 - sag, 0xe8e8e8);
+    save(k, 12, 9);
+  }
 
   // --- odds and ends --------------------------------------------------------------
   // Grave marker.

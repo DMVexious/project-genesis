@@ -11,10 +11,10 @@ import { animateGround, buildGround, clearGround } from "./ground.js";
 import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
 import { drawMinimap } from "./minimap.js";
-import { clearObjects, flickerFires, renderObjects } from "./objects.js";
-import { clearVillages, renderVillages, villageColor } from "./villages.js";
+import { clearObjects, flickerFires, liveHomes, renderObjects } from "./objects.js";
+import { clearVillages, renderVillages, villageColor, waveBanners } from "./villages.js";
 import { select } from "./panel.js";
-import { clearSky, renderSky, updateSky } from "./sky.js";
+import { clearSky, darkness, renderSky, updateSky } from "./sky.js";
 import { currentMode, villagerClick } from "./modes.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
@@ -95,7 +95,9 @@ export class WorldScene extends Phaser.Scene {
     if (t - this.flicker > 110) {  // campfires flicker
       this.flicker = t;
       flickerFires(this, t);
+      waveBanners(t);
     }
+    liveHomes(this, t, darkness());
     animateGround(t);
     updateSky(this, t, dt);
     cull(this);
