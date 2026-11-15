@@ -129,11 +129,13 @@ class Simulation:
                                       self.cfg.population, self.cfg.decay_every, self.cfg.map_name)
         self.commands: list[dict] = []  # player/world commands waiting for the next tick
         self.meta: dict[int, NpcMeta] = {}
+        killers = 0
         for n in self.state["npcs"]:
             genome = random_genome(self.rng)
-            if self.cfg.population <= 4 and genome.aggression == "Bloodthirsty":
-                # a handful of founders with a killer among them is a very short story
+            if genome.aggression == "Bloodthirsty" and (self.cfg.population <= 4 or killers):
+                # a handful of founders with a killer among them (or a band of them) is a very short story
                 genome = dataclasses.replace(genome, aggression="Hostile")
+            killers += genome.aggression == "Bloodthirsty"
             self._register(n["id"], genome, look=random_look(self.rng),
                            persona=random_persona(self.persona_rng))
         self._runtime()

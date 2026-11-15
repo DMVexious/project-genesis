@@ -1758,3 +1758,27 @@ class AfterlifeTest(unittest.TestCase):
         sim.afterlife = {"name": "x", "cause": "", "heirs": []}
         sim.let_go()
         self.assertIsNone(sim.afterlife)
+
+
+class HomesOffTheLandTest(unittest.TestCase):
+    """A hut built far from the hearth still houses its builder's village (else it stays 'full' for ever)."""
+
+    def test_far_home_counts(self):
+        from genesis.engine.defs import BASE_ROOM, OBJECTS
+        e = Engine()
+        e.init(3, 80, 56, 3)
+        w = e.world
+        n = w.npcs[0]
+        v = w.villages[n.village]
+        x, y = next((x, y) for y in range(w.h) for x in range(w.w)
+                    if w.free(x, y) and w.village_at(x, y) is None and w.passable(x, y))
+        o = w.place("hut", x, y, owner=n.id, progress=0)
+        self.assertEqual(o.village, -1)
+        w.finish(o, n.id)
+        self.assertEqual(o.village, v.id)
+        self.assertEqual(w.room(v.id), BASE_ROOM + OBJECTS["hut"].capacity)
+
+    def test_one_killer_among_founders(self):
+        for seed in range(20):
+            sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=seed, population=8))
+            self.assertLessEqual(sum(m.genome.aggression == "Bloodthirsty" for m in sim.meta.values()), 1)

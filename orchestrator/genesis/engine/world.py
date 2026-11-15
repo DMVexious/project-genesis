@@ -462,6 +462,8 @@ class World:
         self.events.append({"type": "built", "npc": by, "owner": o.owner, "what": o.kind, "x": o.x, "y": o.y,
                             "obj": o.id, "village": o.village})
         n = self.by_id.get(o.owner)
+        if spec.home and o.village == -1 and n is not None and n.alive and n.village in self.villages                 and not self.villages[n.village].abandoned:
+            o.village = n.village  # a home built off any village's land still houses its builder's people
         if spec.hearth and all(cheb(o.x, o.y, v.x, v.y) >= VILLAGE_GAP for v in self.villages.values()
                                if not v.abandoned):
             v = self.found_village(o.x, o.y, o.owner)  # a hearth far from anyone: a new village
