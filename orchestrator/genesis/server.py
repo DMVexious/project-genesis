@@ -363,8 +363,18 @@ def create_app(args) -> FastAPI:
             hub.clients.discard(ws)
 
     if WEB_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+        app.mount("/", _FreshStaticFiles(directory=WEB_DIR, html=True), name="web")
     return app
+
+
+class _FreshStaticFiles(StaticFiles):
+    """Static files the browser always revalidates (cheap 304s via the etag): without
+    this a refresh can keep running yesterday's JS modules after the page changed."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 def _pid_alive(pid: int) -> bool:
