@@ -1782,3 +1782,11 @@ class HomesOffTheLandTest(unittest.TestCase):
         for seed in range(20):
             sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=seed, population=8))
             self.assertLessEqual(sum(m.genome.aggression == "Bloodthirsty" for m in sim.meta.values()), 1)
+
+
+class MarkupInSpeechTest(unittest.TestCase):
+    def test_tags_are_stripped(self):
+        from genesis.brain import plain_line, spoken
+        self.assertEqual(plain_line("Nah. Got scraps. Need wood yourself?</blockquote>", "Do")[0],
+                         "Nah. Got scraps. Need wood yourself?")
+        self.assertEqual(spoken("Sure thing <br> come by later</p>"), "Sure thing come by later")

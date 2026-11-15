@@ -458,11 +458,15 @@ def line_score(line: str, heard: str = "", mine: list[str] = (), own_belief: int
     return score
 
 
+_TAG_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9]*[^<>]*>")
+
+
 def plain_line(text: str, name: str = "") -> tuple[str, bool]:
     """A line from a model answering in free text: the first real line, without a
     "Name:" prefix or quotes. Returns (line, whether it ends with LEAVE_TAG)."""
     leave = LEAVE_TAG in text.lower() or "[leave]" in text.lower()
     text = re.sub(r"\[(?:bye|leave)\]", " ", text, flags=re.I)
+    text = _TAG_RE.sub(" ", text)  # (markup a model tacks on: </blockquote>, <br>...)
     first = next((ln for ln in text.splitlines() if re.search(r"[A-Za-z]{2,}", ln)), "")
     first = re.sub(r"^\s*\**" + (re.escape(name) if name else r"[A-Z][a-z]+") + r"\**\s*:\s*", "", first)
     return first.strip().strip('"“”').strip(), leave
@@ -482,6 +486,7 @@ def is_junk(line: str) -> bool:
 
 def spoken(line: str) -> str:
     """The model's line, cleaned; raises (so the caller falls back) if it's junk."""
+    line = re.sub(r"\s{2,}", " ", _TAG_RE.sub(" ", line))
     line = line.strip().lstrip("/-*").strip().strip('"').strip()
     line = re.split(r'"\s*[},\]]|[{}\[\]]', line)[0].strip()  # drop stray JSON a small model tacked on
     line = clamp_words(line)
