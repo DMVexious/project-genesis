@@ -7,6 +7,7 @@
  */
 import { $ } from "./config.js";
 import { initGodbar } from "./god.js";
+import { initTabs } from "./tabs.js";
 import { initMenu, menuOpen, openMenu } from "./menu.js";
 import { initMinimap, toggleMinimap } from "./minimap.js";
 import { connect, send } from "./net.js";
@@ -110,5 +111,6 @@ initMenu();
 initPlay();
 initGod();
 initGodbar();
+initTabs();
 initModes();
 connect();

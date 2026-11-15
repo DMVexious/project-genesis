@@ -7,6 +7,7 @@ import { clearCull, cull } from "./cull.js";
 import { clearDrops, renderDrops } from "./drops.js";
 import { anim, newFx, playFx, poseSprite, reduceMotion } from "./fx.js";
 import { endTool, hoverTile, useTool } from "./god.js";
+import { hideTip, hoverTip } from "./tabs.js";
 import { animateGround, buildGround, clearGround } from "./ground.js";
 import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
@@ -43,6 +44,11 @@ export class WorldScene extends Phaser.Scene {
     });
     this.input.on("pointermove", (p) => {
       if (currentMode() === "god") { const at = cam.getWorldPoint(p.x, p.y); hoverTile(this, at.x, at.y); }
+      if (p.isDown || menuOpen()) hideTip();
+      else { const at = cam.getWorldPoint(p.x, p.y); hoverTip(at.x, at.y, p.event.clientX, p.event.clientY); }
+    });
+    this.input.on("gameout", hideTip);
+    this.input.on("pointermove", (p) => {
       if (drag && drag.tool && p.isDown) {
         const at = cam.getWorldPoint(p.x, p.y);
         useTool(this, at.x, at.y, false);
@@ -332,6 +338,9 @@ export function removeNpc(id) {
 }
 
 export function showBubble(d, tick) {
+  const mode = document.body.dataset.bubbles;  // (settings: everyone's, only who you follow, or none)
+  if (mode === "off" || (mode === "mine" && d.npc !== state.selected && d.npc !== state.possessed &&
+      d.target !== state.selected && d.target !== state.possessed)) return;
   const old = state.bubbles.get(d.npc);
   if (old) old.el.remove();
   const el = document.createElement("div");

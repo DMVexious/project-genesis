@@ -135,7 +135,8 @@ input[type=number] { width: 80px; background: var(--panel-2); color: var(--ink);
 #speed { width: 110px; vertical-align: middle; }
 #speed-val { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-#npc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 32vh; overflow-y: auto; }
+#npc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
+.tab:has(#detail:not([hidden])) #npc-list { max-height: 22vh; }
 #npc-list li {
   display: grid; grid-template-columns: 14px 1fr 64px 26px; align-items: center; gap: 6px;
   padding: 3px 6px; border-radius: 4px; cursor: pointer; background: var(--panel-2);
@@ -164,7 +165,7 @@ input[type=number] { width: 80px; background: var(--panel-2); color: var(--ink);
 #detail .persona { font-size: 12px; font-style: italic; opacity: 0.85; margin: 6px 0; line-height: 1.4; }
 
 #talks, .talks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-#talks { max-height: 38vh; overflow-y: auto; flex: none; }
+#talks { max-height: 46vh; overflow-y: auto; flex: none; }
 .talk { background: var(--panel-2); border-left: 3px solid #6aa6d8; border-radius: 4px; padding: 5px 8px; font-size: 13px; }
 .talk.fight { border-left-color: #d9534f; }
 .talk.trade { border-left-color: #7bb661; }
@@ -210,6 +211,42 @@ h2 .toggle { text-transform: none; letter-spacing: 0; font-size: 11px; cursor: p
 #log { list-style: none; margin: 0; padding: 0; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
 #log li { color: var(--muted); }
 #log li b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; margin-right: 4px; }
+
+/* --- panel tabs ---------------------------------------------------------- */
+#tabs { display: flex; gap: 2px; border-bottom: 1px solid #4a3d30; margin-top: 2px; }
+#tabs button { border: 0; border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); padding: 5px 6px; font-size: 12px; white-space: nowrap; flex: 1 1 auto; }
+#tabs button[data-tab="settings"] { flex: 0 0 auto; }
+#tabs button.on { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 2px 0 var(--accent); }
+#tabs button:hover { color: var(--ink); }
+#panel .tab { display: flex; flex-direction: column; gap: 8px; }
+#panel .tab[hidden] { display: none; }
+#chart { width: 100%; height: 110px; background: var(--panel-2); border-radius: 4px; display: block; }
+#chart-key { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+#chart-key i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+#chart-key b { color: var(--ink); font-variant-numeric: tabular-nums; }
+#settings .choices { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+#settings .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+#settings input[type=range] { flex: 1; }
+/* family: parents, them and theirs, children */
+.family { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.fam-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.fam-row small { width: 52px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.fam-row.me b { padding: 1px 7px; border-radius: 8px; background: #4a3d30; }
+.kin { padding: 1px 7px; border-radius: 8px; background: #15110d; color: var(--ink); cursor: pointer; }
+.kin:hover { outline: 1px solid var(--accent); }
+.kin.gone { opacity: .5; font-style: italic; cursor: default; }
+/* villages tab */
+.village .vp { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+.village .vp a { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #15110d; color: var(--ink); cursor: pointer; }
+.village .vbel { font-size: 11px; color: var(--muted); margin-top: 4px; font-style: italic; }
+.village .vs .lbl, .village .vb .lbl { font-size: 10px; color: var(--muted); }
+/* what is under the pointer */
+#tip { position: fixed; z-index: 30; pointer-events: none; background: rgba(20, 14, 9, .92); color: var(--ink);
+  border: 1px solid #4a3d30; border-radius: 5px; padding: 4px 8px; font-size: 12px; line-height: 1.35; max-width: 220px; }
+#tip[hidden] { display: none; }
+/* settings applied to the world */
+body.no-bars .npc-tag .work { display: none !important; }
+body[data-bubbles="off"] .bubble { display: none !important; }
 
 /* --- overlay: emojis + speech bubbles --------------------------------- */
 .npc-tag { position: absolute; transform: translate(-50%, -100%); display: flex; flex-direction: column; align-items: center; gap: 2px; white-space: nowrap; }

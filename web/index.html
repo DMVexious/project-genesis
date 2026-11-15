@@ -167,17 +167,30 @@
       </div>
 
       <form id="save-form" class="controls" hidden><input id="save-name" maxlength="40" autocomplete="off" placeholder="Name this save"><button>💾 Save</button><button id="save-cancel" type="button">✕</button></form>
-      <div class="hint">Modes at the top of the world: 👁 Watch · ⚡ God (shape the land, the sky and the people) · 🎮 Play (become someone). Press H for all the controls.</div>
-      <div class="hint">🏠 hut (home) · 🌾 farm · 🔥 campfire · 🪦 grave · ring colour under feet = temperament</div>
+      <nav id="tabs">
+        <button data-tab="world" class="on">🌍 World</button>
+        <button data-tab="village">🏘️ Villages</button>
+        <button data-tab="people">🧑 People</button>
+        <button data-tab="chronicle">📜 Chronicle</button>
+        <button data-tab="settings" title="Settings">⚙️</button>
+      </nav>
 
-      <h2 class="row">Conversations
-        <label class="toggle" title="Hide pre-written lines; show only what the LLM wrote"><input type="checkbox" id="llm-only"> 🧠 LLM only</label></h2>
-      <ol id="talks"><li class="hint">Nobody has spoken yet. NPCs talk when they meet.</li></ol>
+      <section class="tab" data-tab="world">
+        <h2>Over time</h2>
+        <canvas id="chart"></canvas>
+        <div id="chart-key"></div>
+        <h2 class="row">Conversations
+          <label class="toggle" title="Hide pre-written lines; show only what the LLM wrote"><input type="checkbox" id="llm-only"> 🧠 LLM only</label></h2>
+        <ol id="talks"><li class="hint">Nobody has spoken yet. NPCs talk when they meet.</li></ol>
+        <div class="hint">Modes at the top of the world: 👁 Watch · ⚡ God (shape the land, the sky and the people) · 🎮 Play (become someone). Press H for all the controls.</div>
+        <div class="hint">🏠 hut (home) · 🌾 farm · 🔥 campfire · 🪦 grave · ring colour under feet = temperament · rest the pointer on something to see what it is</div>
+      </section>
 
-      <h2>Villages</h2>
-      <div id="villages"></div>
+      <section class="tab" data-tab="village" hidden>
+        <div id="villages"></div>
+      </section>
 
-      <h2>Population</h2>
+      <section class="tab" data-tab="people" hidden>
       <ul id="npc-list"></ul>
 
       <div id="detail" hidden>
@@ -194,10 +207,30 @@
         </div>
         <div id="detail-body"></div>
       </div>
+      </section>
 
-      <h2>Chronicle</h2>
-      <ol id="log"></ol>
+      <section class="tab" data-tab="chronicle" hidden>
+        <ol id="log"></ol>
+      </section>
+
+      <section class="tab" data-tab="settings" id="settings" hidden>
+        <h2>Speech bubbles</h2>
+        <div class="choices">
+          <label><input type="radio" name="bubbles" value="all"> Everyone</label>
+          <label><input type="radio" name="bubbles" value="mine"> Only who I follow</label>
+          <label><input type="radio" name="bubbles" value="off"> None</label>
+        </div>
+        <h2>On the map</h2>
+        <label class="check"><input type="checkbox" id="set-names"> Village names</label>
+        <label class="check"><input type="checkbox" id="set-bars"> Work bars over villagers</label>
+        <h2>Sound</h2>
+        <label class="check">Volume <input type="range" id="set-volume" min="0" max="100" step="5"></label>
+        <div class="hint">You hear whatever the villager you follow is doing (and thunder, and wolves). 🔊 above turns it all off.</div>
+        <h2>Thinking and talking</h2>
+        <div class="hint">Which language models the villagers use is chosen on the 🌍 New world… screen.</div>
+      </section>
     </aside>
+    <div id="tip" hidden></div>
   </main>
 
   <script src="vendor/phaser.min.js"></script>

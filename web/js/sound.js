@@ -12,6 +12,11 @@ let enabled = true;
 try { enabled = localStorage.getItem("genesis.sound") !== "0"; } catch (_e) { /* storage off */ }
 
 export const soundOn = () => enabled;
+let level = 0.55;
+export function setVolume(v) {
+  level = Math.max(0, Math.min(1, v));
+  if (master) master.gain.value = level;
+}
 
 export function setSound(on) {
   enabled = on;
@@ -27,7 +32,7 @@ export function unlock() {
   if (!ctx) {
     ctx = new AC();
     master = ctx.createGain();
-    master.gain.value = 0.55;
+    master.gain.value = level;
     master.connect(ctx.destination);
     noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
     const d = noiseBuf.getChannelData(0);

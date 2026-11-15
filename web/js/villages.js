@@ -13,6 +13,8 @@ export function clearVillages() {
 
 // Each village's banner flutters by its hearth.
 export function waveBanners(t) {
+  const names = !document.body.classList.contains("no-names");
+  for (const s of shown.values()) if (s.label.visible !== names) s.label.setVisible(names);
   for (const [id, s] of shown) s.flag.setTexture(Math.floor(t / 420 + id * 0.7) % 2 ? "banner1" : "banner0");
 }
 
@@ -38,6 +40,7 @@ export function renderVillages(sc, f) {
     const bx = cx + TILE * 0.62, by = (v.y + 1) * TILE - 2;
     s.pole.setPosition(bx, by).setDepth(by - 3);
     s.flag.setPosition(bx + 1, by - 26).setDepth(by - 3).setTint(color).setAlpha(v.abandoned ? 0.7 : 1);
+    s.label.setVisible(!document.body.classList.contains("no-names"));
     s.label.setText(v.abandoned ? `${v.name} (abandoned)` : `${v.name} · ${v.people}`)
       .setPosition(cx, cy - TILE * 1.6).setColor(`#${color.toString(16).padStart(6, "0")}`);
     // its land: a faint dashed ring

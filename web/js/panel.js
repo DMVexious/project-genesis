@@ -5,6 +5,7 @@ import { playSelect } from "./sound.js";
 import { villageColor } from "./villages.js";
 import { state } from "./state.js";
 import { portrait } from "./textures.js";
+import { currentTab, familyHtml, recordStats, showTab } from "./tabs.js";
 import { scene, stageOf } from "./world.js";
 
 // --- side panel ------------------------------------------------------------------
@@ -109,12 +110,21 @@ function villagesHtml(f) {
       return `<span title="${word}">${face} ${esc(nameOf(id))}</span>`;
     }).join(" · ");
     const full = v.people >= v.room;
+    // who lives there (by trade), and what they hold to be true
+    const folk = f.npcs.filter((n) => n.alive && n.village === v.id);
+    const people = folk.map((n) => { const r = roleOf(n); return `<a data-id="${n.id}" title="${r ? esc(r.role) : ""}">${r ? r.emoji : ""}${esc(n.name)}</a>`; }).join("");
+    const beliefs = new Map();
+    for (const n of folk) if (n.belief) beliefs.set(n.belief, [...(beliefs.get(n.belief) || []), n.name]);
+    const top = [...beliefs].sort((a, b) => b[1].length - a[1].length).slice(0, 2)
+      .map(([b, who]) => `“${esc(b)}” <span>(${who.length === 1 ? esc(who[0]) : `${who.length} of them`})</span>`).join("<br>");
     return `<div class="village ${v.abandoned ? "gone" : ""}" data-x="${v.x}" data-y="${v.y}">
       <div class="vh"><span class="dot" style="background:${color}"></span><b>${esc(v.name)}</b>
         <span class="hint">${v.abandoned ? "abandoned" : `${v.people} people · homes for ${v.room}${full ? " (full)" : ""}`}</span></div>
       ${v.abandoned ? "" : `<div class="vb">${built || '<span class="hint">nothing built yet</span>'}</div>
       ${store ? `<div class="vs">📦 ${store}</div>` : ""}
-      ${rel ? `<div class="vr">${rel}</div>` : ""}`}</div>`;
+      ${rel ? `<div class="vr">${rel}</div>` : ""}
+      ${people ? `<div class="vp">${people}</div>` : ""}
+      ${top ? `<div class="vbel">${top}</div>` : ""}`}</div>`;
   }).join("");
 }
 
@@ -148,6 +158,7 @@ function skillRows(n) {
 
 export function renderPanel(f) {
   const s = f.stats;
+  recordStats(f);
   const built = Object.values((state.defs && state.defs.objects) || {}).filter((o) => o.stat && o.stat in s)
     .map((o) => [o.stat, s[o.stat]]);
   const cells = [["pop", s.population], ["births", s.births], ["deaths", s.deaths], ["gen", s.max_generation],
@@ -166,7 +177,6 @@ export function renderPanel(f) {
   updateGod(sel);
   if (sel) {
     const t = sel.traits;
-    const parents = sel.parents.map((p) => esc(state.names.get(p) || `#${p}`)).join(" & ") || "first settlers";
     const sp = state.sprites.get(sel.id);
     const img = sp ? portrait(sp.key) : "";
     const role = roleOf(sel);
@@ -193,7 +203,9 @@ export function renderPanel(f) {
       ${skillRows(sel)}
       <div class="sub">Inventory</div>
       ${invSlots(sel.inv, sel.caps)}
-      <div class="meta">generation ${sel.generation} · ${parents}</div>
+      <div class="sub">Family</div>
+      ${familyHtml(sel, f)}
+      <div class="meta">generation ${sel.generation}</div>
       <div class="meta">${sel.home ? `🏠 home at (${sel.home[0]}, ${sel.home[1]})` : "no home yet"}</div>
       ${sel.expecting ? `<div class="bar"><span>🤰 Expecting</span>
         <span class="track"><span class="fill" style="display:block;width:${sel.expecting}%;background:#e07aa8"></span></span>
@@ -266,6 +278,7 @@ export function select(id) {
 // someone, the camera stays on the player's own body.
 export function focus(id) {
   state.selected = id;
+  if (id !== null && currentTab() !== "people") showTab("people");
   if (id !== null) playSelect();  // (a click also lets the browser start audio)
   const sc = scene();
   const s = state.sprites.get(state.possessed != null ? state.possessed : id);
@@ -294,7 +307,13 @@ function updateGod(sel) {
 }
 
 export function initGod() {
-  $("villages").addEventListener("click", (e) => {  // click a village: look at it
+  $("detail").addEventListener("click", (e) => {  // a relative: go to them
+    const a = e.target.closest(".kin[data-id]:not(.gone)");
+    if (a) focus(Number(a.dataset.id));
+  });
+  $("villages").addEventListener("click", (e) => {  // click a villager: follow them; a village: look at it
+    const who = e.target.closest("a[data-id]");
+    if (who) { focus(Number(who.dataset.id)); return; }
     const v = e.target.closest(".village");
     const sc = scene();
     if (!v || !sc || !sc.cameras) return;
