@@ -212,6 +212,13 @@ h2 .toggle { text-transform: none; letter-spacing: 0; font-size: 11px; cursor: p
 #log li { color: var(--muted); }
 #log li b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; margin-right: 4px; }
 
+/* pixel icons (icons.js) in place of emoji */
+.px-ico { width: 18px; height: 18px; image-rendering: pixelated; vertical-align: -3px; }
+.px-ico.sm { width: 13px; height: 13px; vertical-align: -2px; }
+.px-ico.lg { width: 24px; height: 24px; }
+.npc-tag .px-ico { filter: drop-shadow(0 1px 0 rgba(0, 0, 0, .5)); }
+.npc-tag .action .px-ico { width: 22px; height: 22px; }
+
 /* --- panel tabs ---------------------------------------------------------- */
 #tabs { display: flex; gap: 2px; border-bottom: 1px solid #4a3d30; margin-top: 2px; }
 #tabs button { border: 0; border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); padding: 5px 6px; font-size: 12px; white-space: nowrap; flex: 1 1 auto; }

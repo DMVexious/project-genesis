@@ -8,6 +8,7 @@ import { clearDrops, renderDrops } from "./drops.js";
 import { anim, newFx, playFx, poseSprite, reduceMotion } from "./fx.js";
 import { endTool, hoverTile, useTool } from "./god.js";
 import { hideTip, hoverTip } from "./tabs.js";
+import { ico } from "./icons.js";
 import { animateGround, buildGround, clearGround } from "./ground.js";
 import { terrainAt } from "./land.js";
 import { menuOpen } from "./menu.js";
@@ -297,13 +298,13 @@ export function renderNpcs(sc, f, opts = {}) {
     const carry = n.alive ? loadOf(n.inv) : "";
     if (carry !== s.carry) { s.carry = carry; s.pack.setVisible(!!carry); if (carry) s.pack.setTexture(carry); }
     s.spear.setVisible(!!(n.inv && n.inv.spear) && n.alive && !held);
-    s.statusEl.textContent = n.status;
+    if (s.statusText !== n.status) { s.statusText = n.status; s.statusEl.innerHTML = ico(n.status); }
     updateWorkBar(s, n, f.tick, opts);
     // Re-trigger the pop animation whenever an action emoji is shown.
     s.actionEl.textContent = "";
     if (n.emoji) {
       const el = s.actionEl.cloneNode();
-      el.textContent = n.emoji;
+      el.innerHTML = ico(n.emoji);
       s.actionEl.replaceWith(el);
       s.actionEl = el;
     }

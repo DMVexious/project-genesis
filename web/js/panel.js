@@ -5,6 +5,7 @@ import { playSelect } from "./sound.js";
 import { villageColor } from "./villages.js";
 import { state } from "./state.js";
 import { portrait } from "./textures.js";
+import { ico } from "./icons.js";
 import { currentTab, familyHtml, recordStats, showTab } from "./tabs.js";
 import { scene, stageOf } from "./world.js";
 
@@ -52,10 +53,10 @@ function renderList(npcs) {
     const role = roleOf(n);
     setHtml(li, `
       <span class="swatch" style="background:${hex(AGGRO_COLOR[n.traits.aggression])}"></span>
-      <span class="name">${esc(n.name)} <small>g${n.generation}</small> ${role ? `<span title="${esc(role.role)}">${role.emoji}</span>` : ""}${STAGE_ICON[stageOf(n)]}${n.home ? "🏠" : ""} ${n.status}</span>
+      <span class="name">${esc(n.name)} <small>g${n.generation}</small> ${role ? `<span title="${esc(role.role)}">${role.emoji}</span>` : ""}${STAGE_ICON[stageOf(n)]}${n.home ? ico("🏠", "sm") : ""} ${ico(n.status, "sm")}</span>
       <span class="minibars">${["health", "hunger", "energy"].map((k) =>
         `<i style="width:${n[k]}%;background:${BAR_COLORS[k]}"></i>`).join("")}</span>
-      <span>${n.emoji}</span>`);
+      <span>${ico(n.emoji, "sm")}</span>`);
     const after = prev ? prev.nextSibling : list.firstChild;
     if (after !== li) list.insertBefore(li, after);
     prev = li;
@@ -75,7 +76,7 @@ function invSlots(inv, caps) {
     const cap = (caps && caps[k]) || d.cap;
     const full = cap && n >= cap;
     return `<span class="slot ${n ? "" : "empty"} ${full ? "full" : ""}" title="${esc(d.label)}: ${n}${cap ? ` of ${cap}` : ""}">` +
-      `<span class="ico">${d.emoji}</span>${n ? `<b>${n}</b>` : ""}</span>`;
+      `<span class="ico">${ico(d.emoji, "lg")}</span>${n ? `<b>${n}</b>` : ""}</span>`;
   });
   while (slots.length < INV_SLOTS) slots.push('<span class="slot empty"></span>');
   return `<div class="inv">${slots.join("")}</div>`;
@@ -184,7 +185,7 @@ export function renderPanel(f) {
       <div class="who">
         ${img ? `<img class="portrait" src="${img}" alt="">` : ""}
         <div>
-          <h3>${esc(sel.name)} ${sel.status} ${sel.emoji}</h3>
+          <h3>${esc(sel.name)} ${ico(sel.status)} ${ico(sel.emoji)}</h3>
           <div class="role">${role ? `${role.emoji} ${esc(role.role)} · ` : ""}${villageOf(sel)}${sel.age} years old${stageOf(sel) === "adult" ? "" : ` (${esc(stageOf(sel))})`}</div>
           <div class="look">${esc(describeLook(sel.look))}</div>
         </div>
