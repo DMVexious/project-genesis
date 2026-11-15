@@ -1734,3 +1734,27 @@ class GodPowersTest(unittest.TestCase):
         self.assertEqual(again["tick"], before[0] + 120)
         self.assertGreater(again["stats"]["population"], 0)
         self.assertTrue(any(n["doing"] not in ("", "idle") for n in again["npcs"] if n["alive"]))
+
+
+class AfterlifeTest(unittest.TestCase):
+    """When the player's body dies, they may carry on as one of its own."""
+
+    def test_carry_on_as_a_child(self):
+        sim = Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(seed=7, population=4))
+        a, b, c = [n["id"] for n in sim.state["npcs"][:3]]
+        sim.meta[b].parents = [a]  # b is a's child; c is only a neighbour
+        self.assertTrue(sim.possess(a))
+        asyncio.run(sim.tick())
+        sim.enqueue({"op": "kill", "npc": a, "cause": "a fall"})
+        for _ in range(3):
+            asyncio.run(sim.tick())
+        self.assertIsNone(sim.possessed)
+        heirs = sim.last_frame["afterlife"]["heirs"]
+        self.assertEqual(heirs[0]["id"], b)
+        self.assertEqual(heirs[0]["relation"], "child")
+        self.assertTrue(sim.possess(heirs[0]["id"]))
+        self.assertIsNone(sim.afterlife)
+        sim.release()
+        sim.afterlife = {"name": "x", "cause": "", "heirs": []}
+        sim.let_go()
+        self.assertIsNone(sim.afterlife)

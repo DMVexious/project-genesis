@@ -85,3 +85,7 @@ def delete(folder: Path, name: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+def exists(folder: Path, name: str) -> bool:
+    return (folder / (clean_name(name) + SUFFIX)).is_file()

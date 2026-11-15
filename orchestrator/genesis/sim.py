@@ -226,6 +226,8 @@ class Simulation:
         # and what they should be told (a refusal, an unreachable spot...)
         self.possessed: int | None = None
         self.order: dict | None = None
+        # after the player's body dies: who they could carry on as (see _heirs)
+        self.afterlife: dict | None = None
         self.note: tuple[int, str] | None = None
         # someone speaking to the player's body, waiting for the player to answer:
         # {"from": id, "said": str, "option": str, "consent": bool, "reply": Future}
@@ -352,8 +354,10 @@ class Simulation:
         for nid in [i for i in self.working if i not in living]:
             del self.working[nid]
         if self.possessed is not None and self.possessed not in living:  # the body died under the player
+            dead = self.possessed
             self._note(now, "You died.")
             self.release()
+            self.afterlife = self._heirs(dead)
         for nid, v in views.items():
             if self.busy_until.get(nid, 0) > now:
                 continue
@@ -511,6 +515,7 @@ class Simulation:
         if self.possessed is not None:
             self.release()
         self.possessed, self.order = nid, None
+        self.afterlife = None
         task = self.pending.pop(nid, None)  # whatever it was thinking about, it is not its own mind now
         if task is not None:
             task.cancel()
@@ -520,6 +525,29 @@ class Simulation:
         self.enqueue({"op": "control", "npc": nid, "on": True})
         self.god_log.append(f"🎮 You become {self.meta[nid].name}")
         return True
+
+    def _heirs(self, dead: int) -> dict:
+        """Who the player could carry on as when their body dies: their children
+        first (eldest first), then grandchildren, brothers and sisters, and last
+        anyone else of their village."""
+        living = {n["id"]: n for n in self.state["npcs"] if n["alive"] and n["id"] != dead}
+        me = self.meta.get(dead)
+        body = next((n for n in self.state["npcs"] if n["id"] == dead), None)
+        kids = {i for i in living if dead in self.meta[i].parents}
+        grand = {i for i in living if set(self.meta[i].parents) & kids}
+        sibs = {i for i in living if me and me.parents and set(self.meta[i].parents) & set(me.parents)}
+        village = body.get("village", -1) if body else -1
+        folk = {i for i, n in living.items() if village >= 0 and n.get("village", -1) == village}
+        heirs, seen = [], set()
+        for ids, rel in ((kids, "child"), (grand, "grandchild"), (sibs, "brother or sister"), (folk, "neighbour")):
+            for i in sorted(ids - seen, key=lambda i: -living[i]["age"]):
+                seen.add(i)
+                heirs.append({"id": i, "name": self.meta[i].name, "age": years(living[i]["age"]), "relation": rel})
+        return {"name": me.name if me else "?", "cause": (body or {}).get("cause", ""), "heirs": heirs[:4]}
+
+    def let_go(self):
+        """The player chose not to carry on as anyone after their body died."""
+        self.afterlife = None
 
     def release(self):
         if self.possessed is None:
@@ -1518,7 +1546,7 @@ class Simulation:
             "brain": getattr(self.brain, "name", "?") + (" (paused: slow)" if self.llm_paused(tick) else ""),
             "talker": getattr(self.talker, "name", "?"),
             "map": self.cfg.map_name,
-            "possessed": self.possessed, "player": self._player_frame(),
+            "possessed": self.possessed, "player": self._player_frame(), "afterlife": self.afterlife,
             "sites": self.state.get("sites", []),
             "villages": [{**v, "name": self.village_name(v["id"]),
                           "relations": {str(b): r for (a, b), r in self.relations.items() if a == v["id"]}}

@@ -348,6 +348,16 @@ button.primary:hover { filter: brightness(1.08); }
 .talk.voice { border-left-color: #f6d77a; }
 
 /* --- playing a villager ---------------------------------------------------- */
+#afterlife { position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); z-index: 8; width: min(360px, calc(100% - 32px));
+  background: rgba(24, 18, 13, .96); border: 1px solid #4a3d30; border-radius: 10px; padding: 14px 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .6); text-align: center; animation: toast-in .5s ease-out; }
+#afterlife[hidden] { display: none; }
+#al-head h3 { margin: 0 0 4px; font: 600 18px Georgia, serif; color: var(--accent); }
+#al-head p { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+#al-heirs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+#al-heirs button { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 10px; text-align: left; }
+#al-heirs button small { color: var(--muted); }
+@keyframes toast-in { from { opacity: 0; } to { opacity: 1; } }
 #player-bar { position: absolute; left: 12px; right: 12px; bottom: 60px; z-index: 6; padding: 8px 10px; border-radius: 8px;
   background: rgba(23, 19, 15, .92); border: 1px solid var(--accent); display: flex; flex-direction: column; gap: 6px; }
 #player-bar[hidden] { display: none; }

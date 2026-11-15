@@ -206,6 +206,10 @@ class Hub:
         """Leave the body; it goes back to living its own life."""
         self.sim.release()
 
+    async def _cmd_let_go(self, msg, ws):
+        """After the player's body died: carry on as nobody (just watch)."""
+        self.sim.let_go()
+
     async def _cmd_player(self, msg, ws):
         """{"cmd": "player", "order": {...}}: tell the body what to do (see Simulation.command)."""
         self.sim.command(msg.get("order"))
@@ -314,6 +318,13 @@ def create_app(args) -> FastAPI:
         hub = Hub(sim, args.tick_ms, menu=not args.autostart, args=args)
         hub.installed = await installed_models(args.ollama_url)
         hub.paused = hub.paused or args.paused
+        if args.resume:  # carry on a saved world (the autosave by default) instead of the start screen
+            if saves.exists(hub.save_dir, args.resume):
+                await hub._cmd_load({"name": args.resume}, None)
+                hub.paused = args.paused
+                log.info("resumed '%s' at tick %d", args.resume, sim.state["tick"])
+            else:
+                log.warning("no save called '%s' in %s: starting afresh", args.resume, hub.save_dir)
         app.state.hub = hub
         task = asyncio.create_task(hub.run())
         yield
@@ -398,6 +409,8 @@ def main():
     p.add_argument("--parent-pid", type=int, default=None, help="exit when this process exits (sidecar mode)")
     p.add_argument("--save-dir", default=None, help=f"where saved games go (default: {saves.DEFAULT_DIR})")
     p.add_argument("--autosave", type=int, default=AUTOSAVE_TICKS, help="ticks between autosaves (0: never)")
+    p.add_argument("--resume", nargs="?", const=saves.AUTOSAVE, default=None, metavar="SAVE",
+                   help="carry on a saved world at once (default: the autosave), memories and all")
     args = p.parse_args()
     if args.parent_pid:
         watch_parent(args.parent_pid)

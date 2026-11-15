@@ -35,7 +35,9 @@ def add_sim_args(p: argparse.ArgumentParser):
                    help="ticks between each NPC's LLM goal check; social moments always use the LLM")
     p.add_argument("--llm-budget", type=int, default=2, help="max brain requests in flight at once")
     p.add_argument("--memory", choices=["auto", "chromadb", "simple"], default="auto")
-    p.add_argument("--memory-path", default=None, help="persist ChromaDB here (default: in-memory)")
+    p.add_argument("--memory-path", default=None,
+                   help="keep ChromaDB on disk here instead of in memory. Memories belong to a world: a new "
+                        "world starts with none, and a saved one brings its own back (server: --resume)")
     p.add_argument("-v", "--verbose", action="store_true")
 
 

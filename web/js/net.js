@@ -4,7 +4,7 @@ import { renderGodbar, toast } from "./god.js";
 import { closeMenu, menuOpen, onPreview, onSaves, openMenu, showModels } from "./menu.js";
 import { focus, renderFeeds, renderPanel, select } from "./panel.js";
 import { helpOnFirstVisit, syncMode } from "./modes.js";
-import { renderPlayer } from "./play.js";
+import { renderAfterlife, renderPlayer } from "./play.js";
 import { record, resetView, updateTimeline } from "./replay.js";
 import { state } from "./state.js";
 import { render } from "./world.js";
@@ -67,6 +67,7 @@ export function connect() {
       state.frame = msg;
       render(msg);
       const changed = renderPlayer(msg);
+      renderAfterlife(msg);
       if (changed) focus(state.possessed != null ? state.possessed : state.selected);  // the camera goes with the player
       syncMode();
       renderPanel(msg);

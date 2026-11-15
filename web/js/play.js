@@ -40,6 +40,22 @@ function shortLabel(a) {
   return a.label;
 }
 
+// --- after your body dies: carry on as one of your own ---------------------------------
+let afterSig = "";
+export function renderAfterlife(f) {
+  const a = f.afterlife;
+  const sig = a ? `${a.name}:${a.heirs.map((h) => h.id).join(",")}` : "";
+  if (sig === afterSig) return;
+  afterSig = sig;
+  $("afterlife").hidden = !a;
+  if (!a) return;
+  const how = a.cause ? ` (${esc(a.cause)})` : "";
+  $("al-head").innerHTML = `<h3>${esc(a.name)} has died${how}</h3>
+    <p>${a.heirs.length ? "Their life is over, but yours can go on. Carry on as:" : "Nobody close to them is left to carry on as."}</p>`;
+  $("al-heirs").innerHTML = a.heirs.map((h) =>
+    `<button data-id="${h.id}"><b>🎮 ${esc(h.name)}</b><small>${esc(h.relation)} · ${h.age} years old</small></button>`).join("");
+}
+
 // --- the bar at the bottom of the screen ----------------------------------------
 let barSig = "";
 export function renderPlayer(f) {
@@ -170,6 +186,11 @@ export function groundClick(sc, wx, wy) {
 const KEYS = { w: [0, -1], arrowup: [0, -1], s: [0, 1], arrowdown: [0, 1], a: [-1, 0], arrowleft: [-1, 0], d: [1, 0], arrowright: [1, 0] };
 
 export function initPlay() {
+  $("al-heirs").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-id]");
+    if (b) send({ cmd: "possess", npc: Number(b.dataset.id) });
+  });
+  $("al-watch").onclick = () => send({ cmd: "let_go" });
   $("pb-actions").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-i]");
     if (b) order({ kind: "act", action: $("pb-actions").acts[Number(b.dataset.i)].action });
