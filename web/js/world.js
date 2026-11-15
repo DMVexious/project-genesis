@@ -336,9 +336,11 @@ export function showBubble(d, tick) {
   if (old) old.el.remove();
   const el = document.createElement("div");
   el.className = `bubble ${d.kind || ""} ${d.player ? "player" : ""}`;
-  el.textContent = d.text;  // the server already caps lines at MAX_WORDS
+  el.innerHTML = '<span class="t"></span><span class="dots">…</span>';
+  el.firstChild.textContent = d.text;  // the server already caps lines at MAX_WORDS
   overlay.appendChild(el);
-  state.bubbles.set(d.npc, { el, tick, born: performance.now() });
+  // (its size, measured once, unscaled: placeOverlays lays the bubbles out so they don't cover each other)
+  state.bubbles.set(d.npc, { el, tick, born: performance.now(), w: el.offsetWidth, h: el.offsetHeight });
 }
 
 export function renderBubbles(f) {
@@ -357,6 +359,41 @@ export function renderBubbles(f) {
         if (state.bubbles.get(id) === b) state.bubbles.delete(id);
       }, { once: true });
     }
+  }
+}
+
+// Speech bubbles grow and shrink a little with the zoom, and are stacked so that
+// none covers another: the ones that matter most (whoever you follow, play or
+// talk with, then the oldest) keep their place over the speaker's head and the
+// rest rise above them. One with no room left within reach folds into a small "…".
+const speech = [];
+const LIFT = 26, GAP = 3, MAX_LIFT = 110;
+const bubbleScale = (zoom) => Math.max(0.72, Math.min(1.1, 0.55 + zoom * 0.2));
+function layBubbles(list, zoom) {
+  if (!list.length) return;
+  const k = bubbleScale(zoom);
+  const me = new Set([state.selected, state.possessed].filter((v) => v != null));
+  list.sort((a, c) => (me.has(c.id) - me.has(a.id)) || a.b.born - c.b.born);
+  const placed = [];
+  for (const it of list) {
+    const b = it.b;
+    let w = b.w * k, h = b.h * k;
+    let left = it.x - w / 2, bottom = it.y - LIFT * k, mini = false;
+    for (let tries = 0; tries < 8; tries++) {
+      const hit = placed.find((r) => left < r.right && left + w > r.left && bottom > r.top && bottom - h < r.bottom);
+      if (!hit) break;
+      bottom = hit.top - GAP;
+    }
+    if (it.y - LIFT * k - bottom > MAX_LIFT) {  // no room: a small "…" just over the head instead
+      mini = true;
+      w = 26 * k; h = 20 * k; left = it.x - w / 2; bottom = it.y - LIFT * k;
+    }
+    if (b.mini !== mini) { b.mini = mini; b.el.classList.toggle("mini", mini); }
+    placed.push({ left, right: left + w, top: bottom - h, bottom });
+    b.el.style.setProperty("--bz", k.toFixed(3));
+    b.el.style.left = `${it.x}px`;
+    b.el.style.top = `${bottom}px`;
+    b.el.style.zIndex = me.has(it.id) ? 4 : 2;
   }
 }
 
@@ -404,10 +441,11 @@ export function placeOverlays(sc) {
     const b = state.bubbles.get(id);
     if (b) {
       b.el.style.display = visible ? "" : "none";
-      b.el.style.left = `${x}px`;
-      b.el.style.top = `${y}px`;
+      if (visible) speech.push({ b, id, x, y });
     }
   }
+  layBubbles(speech, cam.zoom);
+  speech.length = 0;
   const sel = state.sprites.get(state.selected);
   sc.ring.setVisible(!!sel);
   if (sel) sc.ring.setPosition(sel.sprite.x, sel.sprite.y).setDepth(sel.sprite.depth - 0.5);
