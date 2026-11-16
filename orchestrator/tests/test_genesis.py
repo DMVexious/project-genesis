@@ -1806,3 +1806,12 @@ class MarkupInSpeechTest(unittest.TestCase):
         self.assertEqual(plain_line("Nah. Got scraps. Need wood yourself?</blockquote>", "Do")[0],
                          "Nah. Got scraps. Need wood yourself?")
         self.assertEqual(spoken("Sure thing <br> come by later</p>"), "Sure thing come by later")
+
+
+class HearingTests(unittest.TestCase):
+    def test_empty_or_huge_clips_are_heard_as_nothing(self):
+        from genesis import hearing
+        if not hearing.available():
+            self.skipTest("faster-whisper not installed")
+        self.assertEqual(hearing.transcribe(b""), "")
+        self.assertEqual(hearing.transcribe(b"x" * (hearing.MAX_BYTES + 1)), "")

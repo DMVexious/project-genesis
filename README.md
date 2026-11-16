@@ -134,6 +134,7 @@ Become a villager. Walk, work, trade, court or fight, and type what you say. The
 | **Esc** (God / Play) | put the power down · leave the body |
 | **V** (Play) | first person: mouse to look, **WASD** walk, **E** use or talk to what you look at, **1…9** the play bar, **Esc** frees the mouse |
 | **P** | hide or show the side panel |
+| hold **T** (or a 🎤) | say it out loud instead of typing (turned into words on this computer) |
 | **Ctrl+S** | quick save |
 
 </details>
@@ -224,6 +225,7 @@ flowchart LR
 | M4 The player | ✅ God powers, Sandbox and Deity modes with Faith, playing as a villager, saved games |
 | M5 Polish | ✅ Walk cycles, tools and loads, building stages, lit windows, banners, pixel icons, stacked bubbles, panel tabs and charts |
 | M6 First person | ✅ See through your villager's eyes: a blocky three.js world built in code, mouse look, E to use and talk, day and night, weather |
+| M7 Voices | ✅ Villagers say their lines out loud (system voices, one per villager); hold T to answer with your own voice, heard locally by faster-whisper |
 
 ## 📖 Reference
 

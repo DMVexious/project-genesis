@@ -6,6 +6,7 @@
  * there are no audio files to ship.
  */
 import { state } from "./state.js";
+import { speaks } from "./voice.js";
 
 let ctx = null, master = null, noiseBuf = null;
 let enabled = true;
@@ -91,6 +92,9 @@ function babble(n, words, { at = 0, vol = 0.22 } = {}) {
     tone(f * 2.02, d * 0.8, { type: "sine", vol: vol * 0.3, at: at + i * 0.115 });
   }
 }
+
+// babble, unless the villager's line is being said out loud (see voice.js)
+const say = (n, ...rest) => { if (!speaks(n.id)) babble(n, ...rest); };
 
 const SOUNDS = {
   select: () => { tone(660, 0.07, { vol: 0.15 }); tone(990, 0.09, { vol: 0.12, at: 0.06 }); },
@@ -229,13 +233,13 @@ export function playFrame(f) {
       case "eat": if (mine) { play("eat", 0.05); play("gulp", 0.4); } break;
       case "craft": if (mine) { play("craft", 0); play("crafted", 0.38); } break;
       case "talk":
-        if (mine) babble(me, words(me.id));
-        else if (atMe) { const o = byId(e.npc); if (o) babble(o, words(o.id), { vol: 0.15 }); }
+        if (mine) say(me, words(me.id));
+        else if (atMe) { const o = byId(e.npc); if (o) say(o, words(o.id), { vol: 0.15 }); }
         if (mine || atMe) {  // the answer comes a beat later
           const other = byId(mine ? e.target : e.npc);
           const replier = mine ? other : me;
           if (replier && f.dialogue.some((d) => d.reply && d.npc === replier.id))
-            babble(replier, words(replier.id), { at: 2.2, vol: mine ? 0.15 : 0.22 });
+            say(replier, words(replier.id), { at: 2.2, vol: mine ? 0.15 : 0.22 });
         }
         break;
       case "attack": {

@@ -19,6 +19,7 @@ import { select } from "./panel.js";
 import { clearSky, darkness, renderSky, updateSky } from "./sky.js";
 import { currentMode, villagerClick } from "./modes.js";
 import { syncFp } from "./fp/fp.js";
+import { speakLine } from "./voice.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
 import { state } from "./state.js";
@@ -340,6 +341,7 @@ export function removeNpc(id) {
 }
 
 export function showBubble(d, tick) {
+  if (d.kind !== "sky" && state.frame) speakLine(d, state.frame.npcs.find((n) => n.id === d.npc));  // (out loud, if voices are on)
   const mode = document.body.dataset.bubbles;  // (settings: everyone's, only who you follow, or none)
   if (mode === "off" || (mode === "mine" && d.npc !== state.selected && d.npc !== state.possessed &&
       d.target !== state.selected && d.target !== state.possessed)) return;

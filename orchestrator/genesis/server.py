@@ -32,10 +32,10 @@ import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from . import saves
+from . import hearing, saves
 from .brain import installed_models
 from .config import add_sim_args, build_sim, model_of, switch_models
 from .engine import MAPS, World
@@ -340,6 +340,26 @@ def create_app(args) -> FastAPI:
     @app.get("/api/frame")
     async def frame():
         return app.state.hub.sim.last_frame
+
+    # The player's voice: a recorded clip in, its words out (see hearing.py).
+    @app.get("/api/hear")
+    async def can_hear():
+        return {"available": hearing.available()}
+
+    @app.post("/api/hear")
+    async def hear(request: Request):
+        if not hearing.available():
+            raise HTTPException(501, "speech recognition is not installed")
+        audio = await request.body()
+        if len(audio) > hearing.MAX_BYTES:
+            raise HTTPException(413, "clip too long")
+        names = [n["name"] for n in app.state.hub.sim.last_frame.get("npcs", []) if n.get("alive")]
+        try:
+            text = await asyncio.get_running_loop().run_in_executor(None, hearing.transcribe, audio, names)
+        except Exception as e:  # (a clip it can't decode, say)
+            log.warning("could not hear that clip: %s", e)
+            raise HTTPException(400, "could not make that out")
+        return {"text": text}
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):

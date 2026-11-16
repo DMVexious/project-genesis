@@ -467,3 +467,12 @@ body.fp-locked #fp-help { display: none; }
 body.fp #minimap, body.fp #mode-hint { display: none !important; }
 body.fp #player-bar .hint { display: none; }
 @media (max-width: 700px) { #fp-help { display: none; } }
+
+/* --- voices (see js/voice.js) ----------------------------------------------------- */
+.mic { display: none; padding: 2px 7px; }
+body.can-hear .mic { display: inline-block; }
+body.listening .mic { background: #7a2a24; outline: 2px solid var(--bad); }
+#listen { display: none; position: absolute; left: 50%; top: 96px; transform: translateX(-50%); z-index: 8; padding: 6px 14px;
+  border-radius: 8px; background: rgba(23, 19, 15, .94); border: 1px solid var(--bad); font-size: 13px; pointer-events: none; }
+body.listening #listen { display: block; animation: listen 1.2s ease-in-out infinite; }
+@keyframes listen { 50% { box-shadow: 0 0 0 4px rgba(217, 83, 79, .35); } }

@@ -17,6 +17,7 @@ import { send } from "../net.js";
 import { openInteract, playing } from "../play.js";
 import { state } from "../state.js";
 import { game, layBubbles } from "../world.js";
+import { setDistanceOf } from "../voice.js";
 import { atmosFrame, initAtmos, resetAtmos, updateAtmos } from "./atmos.js";
 import { buildBlocks, clearBlocks, groundMeshes, waterTime } from "./blocks.js";
 import { clearThings, initThings, objectMeshes, peopleMeshes, personAt, personHeight, poseThings, renderBeasts,
@@ -249,6 +250,10 @@ function placeTags(w, h) {
 export function initFp() {
   showButton();
   $("pb-fp").onclick = () => toggleFp();
+  setDistanceOf((id) => {  // (voices fade with distance in first person)
+    const at = fp.on && fp.eye ? personAt(id) : null;
+    return at ? Math.hypot(at.x - fp.eye[0], at.z - fp.eye[2]) : null;
+  });
   const typing = (e) => ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
   document.addEventListener("keydown", (e) => {
     if (typing(e) || menuOpen() || e.ctrlKey || e.metaKey || e.altKey) return;

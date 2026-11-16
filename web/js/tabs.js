@@ -103,7 +103,7 @@ export function familyHtml(sel, f) {
 }
 
 // --- settings -------------------------------------------------------------------------------
-const DEFAULTS = { bubbles: "all", names: true, bars: true, volume: 55 };
+const DEFAULTS = { bubbles: "all", voices: "mine", names: true, bars: true, volume: 55 };
 export const settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem("genesis.settings") || "{}")); } catch (_e) { /* fresh */ }
 const keep = () => { try { localStorage.setItem("genesis.settings", JSON.stringify(settings)); } catch (_e) { /* storage off */ } };
@@ -118,11 +118,13 @@ function applySettings() {
 function initSettings() {
   const box = $("settings");
   box.querySelector(`input[name="bubbles"][value="${settings.bubbles}"]`).checked = true;
+  (box.querySelector(`input[name="voices"][value="${settings.voices}"]`) || {}).checked = true;
   $("set-names").checked = settings.names;
   $("set-bars").checked = settings.bars;
   $("set-volume").value = settings.volume;
   box.addEventListener("input", () => {
     settings.bubbles = (box.querySelector('input[name="bubbles"]:checked') || {}).value || "all";
+    settings.voices = (box.querySelector('input[name="voices"]:checked') || {}).value || "mine";
     settings.names = $("set-names").checked;
     settings.bars = $("set-bars").checked;
     settings.volume = Number($("set-volume").value);
