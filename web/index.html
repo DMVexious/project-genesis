@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Project Genesis</title>
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <main id="app">
     <section id="stage">
       <div id="game"></div>
+      <div id="fp"><div id="fp-cross"></div><div id="fp-hint"></div><div id="fp-help">Click to look around · WASD walk · E use / talk · 1-9 actions · V map view · Esc frees the mouse</div></div>
       <div id="overlay" aria-hidden="true"></div>
       <div id="modes">
         <button data-mode="watch" title="Watch (1): click a villager to follow and inspect them">👁 Watch</button>
@@ -53,7 +54,8 @@
               <li>Click the ground to walk; click a tree or bush to chop or pick it; <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> take steps</li>
               <li>Click someone to <b>talk</b> (type anything), <b>hit</b>, trade, give or court; they answer</li>
               <li>When someone talks to you, answer in the box at the bottom</li>
-              <li>The bottom bar has what you can do where you stand · <kbd>Esc</kbd> leaves the body</li></ul></section>
+              <li>The bottom bar has what you can do where you stand · <kbd>Esc</kbd> leaves the body</li>
+              <li><kbd>V</kbd> or 🎥 <b>first person</b>: click to look around with the mouse, <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk, <kbd>E</kbd> use or talk to what you look at, <kbd>1</kbd>…<kbd>9</kbd> the bar's actions</li></ul></section>
           </div>
         </div>
       </div>
@@ -114,6 +116,7 @@
           <span id="pb-note"></span>
           <span class="pb-space"></span>
           <span class="hint">click the ground to walk · click someone to talk or hit · WASD steps</span>
+          <button id="pb-fp" type="button">🎥 First person</button>
           <button id="pb-leave" title="Leave the body (Esc)">Leave body</button>
         </div>
         <div id="pb-chat" hidden>
@@ -241,6 +244,6 @@
   </main>
 
   <script src="vendor/phaser.min.js"></script>
-  <script type="module" src="js/main.js?v=2"></script>
+  <script type="module" src="js/main.js?v=3"></script>
 </body>
 </html>

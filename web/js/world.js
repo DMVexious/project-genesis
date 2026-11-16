@@ -18,6 +18,7 @@ import { clearVillages, renderVillages, villageColor, waveBanners } from "./vill
 import { select } from "./panel.js";
 import { clearSky, darkness, renderSky, updateSky } from "./sky.js";
 import { currentMode, villagerClick } from "./modes.js";
+import { syncFp } from "./fp/fp.js";
 import { groundClick, openInteract, playing } from "./play.js";
 import { playFrame } from "./sound.js";
 import { state } from "./state.js";
@@ -379,7 +380,7 @@ export function renderBubbles(f) {
 const speech = [];
 const LIFT = 26, GAP = 3, MAX_LIFT = 110;
 const bubbleScale = (zoom) => Math.max(0.72, Math.min(1.1, 0.55 + zoom * 0.2));
-function layBubbles(list, zoom) {
+export function layBubbles(list, zoom) {
   if (!list.length) return;
   const k = bubbleScale(zoom);
   const me = new Set([state.selected, state.possessed].filter((v) => v != null));
@@ -488,6 +489,7 @@ export function render(f, opts = {}) {
     renderBubbles(f);
   }
   drawMinimap();
+  syncFp(f, opts);  // (the first-person view, when it's on)
 }
 
 export function clearBubbles() {

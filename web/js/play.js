@@ -8,6 +8,7 @@
  * Esc leaves the body, which goes back to living its own life. */
 import { $, TILE } from "./config.js";
 import { send } from "./net.js";
+import { fpJustUnlocked, fpOn } from "./fp/fp.js";
 import { state } from "./state.js";
 
 const ICON = { sleep: "💤", eat: "🍖", chop: "🪓", forage: "🍒", build: "🔨", craft: "🛠️", collect: "🫳", interact: "💬" };
@@ -221,11 +222,12 @@ export function initPlay() {
     const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
     if (e.key === "Escape") {
       e.preventDefault();
+      if (fpOn() && fpJustUnlocked()) return;  // (that Esc only freed the mouse)
       if (interactFor != null) closeInteract();
       else if (!typing) send({ cmd: "release" });
       return;
     }
-    if (typing) return;
+    if (typing || fpOn()) return;  // (in first person, fp.js walks relative to where you look)
     const dir = KEYS[e.key.toLowerCase()];
     if (dir) {
       e.preventDefault();

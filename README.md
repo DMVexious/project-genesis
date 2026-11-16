@@ -104,7 +104,7 @@ Paint forests and lakes, raise buildings, call rain, storms, snow or lightning, 
 <td width="33%" valign="top">
 
 ### 🎮 Play
-Become a villager. Walk, work, trade, court or fight, and type what you say. They talk back in their own voice. When you die, carry on as your child.
+Become a villager. Walk, work, trade, court or fight, and type what you say. They talk back in their own voice. When you die, carry on as your child. Press **V** to see the world **through their eyes**, in blocks.
 
 </td>
 </tr>
@@ -132,6 +132,8 @@ Become a villager. Walk, work, trade, court or fight, and type what you say. The
 | **,** **.** · **Enter** · **Esc** | step back and forth through the replay · play it · back to live |
 | **Q** **E** · **Shift+1…9** (God) | another group of powers · pick a power |
 | **Esc** (God / Play) | put the power down · leave the body |
+| **V** (Play) | first person: mouse to look, **WASD** walk, **E** use or talk to what you look at, **1…9** the play bar, **Esc** frees the mouse |
+| **P** | hide or show the side panel |
 | **Ctrl+S** | quick save |
 
 </details>
@@ -221,6 +223,7 @@ flowchart LR
 | M3 A living world | ✅ Day and night, seasons, weather, fire, fever, wild animals, an event director |
 | M4 The player | ✅ God powers, Sandbox and Deity modes with Faith, playing as a villager, saved games |
 | M5 Polish | ✅ Walk cycles, tools and loads, building stages, lit windows, banners, pixel icons, stacked bubbles, panel tabs and charts |
+| M6 First person | ✅ See through your villager's eyes: a blocky three.js world built in code, mouse look, E to use and talk, day and night, weather |
 
 ## 📖 Reference
 
@@ -474,7 +477,10 @@ always give the same world (`test_same_seed_same_story`).
 The browser receives the registry once per connection (`{"type": "defs"}`) and reads labels, icons and
 counters from it. Its code is plain ES modules in `web/js/`: `world.js` (the scene), `textures.js` and
 `icons.js` (all the pixel art, drawn in code), `sky.js` (night and weather), `panel.js` and `tabs.js`
-(the side panel), `god.js`, `play.js`, `sound.js` and friends.
+(the side panel), `god.js`, `play.js`, `sound.js` and friends. The first-person view is in `web/js/fp/`:
+`fp.js` (camera, controls, name tags), `blocks.js` (the ground as instanced blocks), `models.js` (every
+blocky model, built from boxes in code), `things.js` (keeping them in step with frames) and `atmos.js`
+(light, fog, rain and snow). It uses three.js, vendored in `web/vendor/` like Phaser.
 
 </details>
 

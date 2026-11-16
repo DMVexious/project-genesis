@@ -56,15 +56,23 @@ export function clearSky() {
   if (sky.rain) { sky.rain.killAll(); sky.snow.killAll(); }
 }
 
+// The dark of the hour (0 day .. ~0.7 deep night), deepened by bad weather and by an
+// eclipse; and the fog the weather brings. (The first-person view uses these too.)
+export function darkOf(c) {
+  if (!c || c.light == null) return 0;
+  const night = (1 - c.light) * 0.68, gloom = (GLOOM[c.weather] || 0) * (0.4 + 0.6 * c.light);
+  let dark = 1 - (1 - night) * (1 - gloom);
+  if (c.omen && c.omen.kind === "eclipse") dark = Math.max(dark, 0.62);
+  return dark;
+}
+export const fogOf = (c) => (c && FOG[c.weather]) || 0;
+
 // --- each frame from the server -----------------------------------------------------
 export function renderSky(sc, f, opts = {}) {
   setup(sc);
   const c = f.clock;
   if (!c || c.light == null) { sky.target = 0; return; }
-  // the dark of the hour, deepened by bad weather and by an eclipse
-  const night = (1 - c.light) * 0.68, gloom = (GLOOM[c.weather] || 0) * (0.4 + 0.6 * c.light);
-  let dark = 1 - (1 - night) * (1 - gloom);
-  if (c.omen && c.omen.kind === "eclipse") dark = Math.max(dark, 0.62);
+  const dark = darkOf(c);
   sky.target = dark;
   sky.warm = c.light > 0 && c.light < 1 ? 1 - Math.abs(c.light - 0.5) * 2 : 0;  // dawn and dusk glow red
   if (opts.snap || sky.fresh) { sky.dark = dark; sky.fogA = FOG[c.weather] || 0; sky.fresh = false; }

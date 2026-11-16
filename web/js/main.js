@@ -14,6 +14,7 @@ import { connect, send } from "./net.js";
 import { focus, initGod, renderTalks, select } from "./panel.js";
 import { initModes } from "./modes.js";
 import { initPlay, playing } from "./play.js";
+import { initFp } from "./fp/fp.js";
 import { goLive, rp, seek, setDir, step } from "./replay.js";
 import { setSound, soundOn } from "./sound.js";
 import { state } from "./state.js";
@@ -121,6 +122,7 @@ $("save-form").addEventListener("submit", (e) => {
 initMinimap();
 initMenu();
 initPlay();
+initFp();
 initGod();
 initGodbar();
 initTabs();
