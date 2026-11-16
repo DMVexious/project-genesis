@@ -11,6 +11,7 @@
  */
 import * as THREE from "../../vendor/three.module.min.js";
 import { $, params } from "../config.js";
+import { toast } from "../god.js";
 import { menuOpen } from "../menu.js";
 import { send } from "../net.js";
 import { openInteract, playing } from "../play.js";
@@ -252,7 +253,17 @@ export function initFp() {
   document.addEventListener("keydown", (e) => {
     if (typing(e) || menuOpen() || e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k === "v" && playing()) { e.preventDefault(); toggleFp(); return; }
+    if (k === "v") {
+      e.preventDefault();
+      if (playing()) toggleFp();
+      else if (state.selected != null && (state.frame.npcs.find((n) => n.id === state.selected) || {}).alive) {
+        // not in a body yet: become whoever you're following, and see through their eyes
+        fp.wanted = true;
+        try { localStorage.setItem("genesis.fp", "1"); } catch (err) { /* storage off */ }
+        send({ cmd: "possess", npc: state.selected });
+      } else toast("First person is through a villager's eyes: click someone first, then press V.", false);
+      return;
+    }
     if (!fp.on) return;
     if (MOVE[k]) {
       e.preventDefault();
