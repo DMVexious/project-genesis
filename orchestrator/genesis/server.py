@@ -94,11 +94,11 @@ class Hub:
         """The map is most of a frame and changes on few ticks: leave out the
         parts every client already has. (A client that just connected was sent
         the whole latest frame; see ws_endpoint.)"""
-        key = (frame["world"], frame["rev"], frame["trev"])
+        key = (frame["world"], frame["rev"], frame["trev"], frame.get("chron_rev"))
         last, self._sent = self._sent, key
         if last is None or last[0] != key[0]:
             return frame
-        have = {name for name, i in (("tiles", 1), ("terrain", 2)) if last[i] == key[i]}
+        have = {name for name, i in (("tiles", 1), ("terrain", 2), ("chronicle", 3)) if last[i] == key[i]}
         return {k: v for k, v in frame.items() if k not in have} if have else frame
 
     async def run(self):

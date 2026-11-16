@@ -476,3 +476,14 @@ body.listening .mic { background: #7a2a24; outline: 2px solid var(--bad); }
   border-radius: 8px; background: rgba(23, 19, 15, .94); border: 1px solid var(--bad); font-size: 13px; pointer-events: none; }
 body.listening #listen { display: block; animation: listen 1.2s ease-in-out infinite; }
 @keyframes listen { 50% { box-shadow: 0 0 0 4px rgba(217, 83, 79, .35); } }
+
+/* --- the chronicle (written history) ---------------------------------------------- */
+#book { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+#book .entry { background: var(--panel-2); border-radius: 6px; padding: 7px 10px; border-left: 3px solid #8a6a40; }
+#book .entry.life { border-left-color: #b8b4ac; }
+#book .entry.myth { border-left-color: #6aa6d8; font-style: italic; }
+#book .eh { font-size: 12px; color: var(--muted); }
+#book .eh b { color: var(--accent); font-weight: 600; }
+#book p { margin: 4px 0 0; font: 14px/1.5 Georgia, "Times New Roman", serif; color: var(--ink); }
+#log-box { margin-top: 10px; }
+#log-box summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 6px; }

@@ -1,5 +1,6 @@
 """Run from orchestrator/:  python -m unittest discover -s tests -v"""
 import asyncio
+import pickle
 import dataclasses
 import json
 import random
@@ -1815,3 +1816,83 @@ class HearingTests(unittest.TestCase):
             self.skipTest("faster-whisper not installed")
         self.assertEqual(hearing.transcribe(b""), "")
         self.assertEqual(hearing.transcribe(b"x" * (hearing.MAX_BYTES + 1)), "")
+
+
+class ChronicleTests(unittest.TestCase):
+    def make(self, talker=None, **kw):
+        cfg = dict(seed=7, population=6, width=40, height=30)
+        cfg.update(kw)
+        return Simulation(Engine(), HeuristicBrain(1), SimpleMemory(), SimConfig(**cfg), talker=talker)
+
+    def run_days(self, sim, ticks):
+        async def go():
+            for _ in range(ticks):
+                f = await sim.tick()
+            await sim.chronicle.settle()
+            return f
+        return asyncio.run(go())
+
+    def test_each_day_is_written_down_and_remembered(self):
+        sim = self.make()
+        f = self.run_days(sim, 1600)
+        days = [e for e in sim.chronicle.entries if e["kind"] == "day"]
+        self.assertGreaterEqual(len(days), 3)
+        self.assertTrue(all(e["text"] and e["title"].startswith("Day ") for e in days))
+        self.assertFalse(any(e["llm"] for e in days))  # (no model here: the template wrote them)
+        # in the frame, and remembered by the living as stories
+        self.assertEqual(f["chron_rev"], sim.chronicle.rev)
+        self.assertEqual(f["chronicle"][-1], sim.chronicle.entries[-1])
+        stories = [m for m in sim.memory.dump() if m.kind == "story"]
+        self.assertTrue(stories)
+        # kept in saves
+        clone = self.make()
+        clone.restore(pickle.loads(pickle.dumps(sim.snapshot())))
+        self.assertEqual(clone.chronicle.entries, sim.chronicle.entries)
+
+    def test_the_writer_gets_only_the_days_facts(self):
+        asked = []
+
+        class Writer(HeuristicBrain):
+            async def _text(self, messages, max_tokens):
+                asked.append(messages[-1]["content"])
+                return "<p>**The day was quiet.** Folk worked and ate.</p>"
+
+        sim = self.make(talker=Writer(2))
+        self.run_days(sim, 700)
+        days = [e for e in sim.chronicle.entries if e["kind"] == "day"]
+        self.assertTrue(days)
+        self.assertTrue(all(e["llm"] for e in days))
+        self.assertEqual(days[0]["text"], "The day was quiet. Folk worked and ate.")
+        self.assertTrue(asked[0].startswith("Day "))
+        self.assertNotIn("talks to", asked[0])
+
+    def test_notable_deaths_get_an_obituary_with_their_age_in_years(self):
+        sim = self.make()
+        self.run_days(sim, 3)
+        founder = sim.alive()[0]
+        sim.chronicle.deeds[sim.meta[founder["id"]].name] = __import__("collections").deque(["built a hut"])
+
+        async def go():
+            sim.chronicle.died(sim, founder["id"], "🪦 X died peacefully of old age", 10)
+            await sim.chronicle.settle()
+        asyncio.run(go())
+        life = [e for e in sim.chronicle.entries if e["kind"] == "life"][-1]
+        from genesis.engine.defs import years
+        self.assertIn(f"at {years(founder['age'])}", life["text"])
+        self.assertLess(years(founder["age"]), 200)
+
+    def test_god_acts_become_a_myth(self):
+        sim = self.make()
+        self.run_days(sim, 5)
+        sim.chronicle.note(sim, 6, ["⚡ The sky strikes Bo dead", "✨ A light blesses Ka"],
+                           ["⚡ The sky strikes Bo dead", "✨ A light blesses Ka"])
+        asyncio.run(self._settle_in_loop(sim))
+        myths = [e for e in sim.chronicle.entries if e["kind"] == "myth"]
+        self.assertEqual(len(myths), 1)
+        self.assertIn("sky", myths[0]["text"].lower())
+
+    async def _settle_in_loop(self, sim):
+        # (note() started its task outside a loop: write the myth again, inside one)
+        sim.chronicle.god_seen = ["The sky strikes Bo dead", "A light blesses Ka"]
+        sim.chronicle.note(sim, 7, [], ["⚡ again"])
+        await sim.chronicle.settle()

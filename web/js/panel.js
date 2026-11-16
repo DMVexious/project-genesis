@@ -239,6 +239,7 @@ export function renderFeeds(f) {
     state.talks.length = Math.min(state.talks.length, MAX_TALKS);
     renderTalks();
   }
+  renderBook(f);
   const log = $("log");
   const items = [];
   for (const line of f.log.filter((l) => !l.includes(" talks to "))) items.push(`<li><b>${f.tick}</b>${esc(line)}</li>`);
@@ -246,6 +247,19 @@ export function renderFeeds(f) {
     log.insertAdjacentHTML("afterbegin", items.reverse().join(""));
     while (log.children.length > 150) log.lastChild.remove();
   }
+}
+
+// The written history (see genesis/chronicle.py): each day's entry, obituaries and myths, newest first.
+const BOOK_ICON = { day: "📜", life: "🕯️", myth: "☁️" };
+let bookRev = -1;
+function renderBook(f) {
+  if (f.chron_rev === bookRev || !f.chronicle) return;
+  bookRev = f.chron_rev;
+  $("book").innerHTML = f.chronicle.length
+    ? f.chronicle.slice().reverse().map((e) => `<li class="entry ${e.kind}">
+        <div class="eh">${BOOK_ICON[e.kind] || "📜"} <b>${esc(e.title)}</b>${e.llm ? LLM_MARK : ""}</div>
+        <p>${esc(e.text)}</p></li>`).join("")
+    : `<li class="hint">Nothing written yet: the first entry comes at the end of the first day.</li>`;
 }
 
 export const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", give: "🎁", mate: "💞", voice: "☁️" };

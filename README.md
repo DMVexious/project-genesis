@@ -226,6 +226,7 @@ flowchart LR
 | M5 Polish | ✅ Walk cycles, tools and loads, building stages, lit windows, banners, pixel icons, stacked bubbles, panel tabs and charts |
 | M6 First person | ✅ See through your villager's eyes: a blocky three.js world built in code, mouse look, E to use and talk, day and night, weather |
 | M7 Voices | ✅ Villagers say their lines out loud (system voices, one per villager); hold T to answer with your own voice, heard locally by faster-whisper |
+| M8 Chronicle | ✅ Each day written up as a short record by the talk model, obituaries for notable villagers, myths about the sky; villagers remember them as stories |
 
 ## 📖 Reference
 

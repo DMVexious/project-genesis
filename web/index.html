@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Project Genesis</title>
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <main id="app">
@@ -221,7 +221,9 @@
       </section>
 
       <section class="tab" data-tab="chronicle" hidden>
-        <ol id="log"></ol>
+        <h2>The chronicle</h2>
+        <ol id="book"></ol>
+        <details id="log-box"><summary>Everything that happened, as it happened</summary><ol id="log"></ol></details>
       </section>
 
       <section class="tab" data-tab="settings" id="settings" hidden>
@@ -252,6 +254,6 @@
   </main>
 
   <script src="vendor/phaser.min.js"></script>
-  <script type="module" src="js/main.js?v=4"></script>
+  <script type="module" src="js/main.js?v=5"></script>
 </body>
 </html>

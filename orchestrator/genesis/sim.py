@@ -25,6 +25,7 @@ from .engine.defs import (ACTIONS, ANIMALS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_E
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
 from .engine.defs import WATER
+from .chronicle import Chronicle
 from .events import Director
 from . import powers
 from .memory import Memory
@@ -123,6 +124,7 @@ class Simulation:
         self.persona_rng = random.Random(self.cfg.seed * 1_000_003 + 17)
         self.news: deque[str] = deque(maxlen=6)  # recent village events NPCs gossip about
         self.director = Director(self.cfg.seed)   # wildfires, migrants, festivals... (see events.py)
+        self.chronicle = Chronicle()              # the land's written history (see chronicle.py)
         self.mauled: dict[int, int] = {}          # NPC -> tick a wolf last bit them
         self.faith = powers.FAITH_START            # the god's faith (spent on powers in deity mode)
         self.believers: set[int] = set()           # villagers who have heard the voice or seen a miracle
@@ -153,7 +155,7 @@ class Simulation:
     SAVED = ("rng", "persona_rng", "village_rng", "news", "director", "mauled", "faith", "believers", "meta",
              "totals", "homes", "vacant", "plans", "decision_stats", "last_llm", "last_talk", "busy_until",
              "busy_from", "working", "talk_wait", "roles", "village_names", "relations", "quiet",
-             "last_any_talk", "_last_seen", "llm_neighbours", "activity", "intent", "source")
+             "last_any_talk", "_last_seen", "llm_neighbours", "activity", "intent", "source", "chronicle")
 
     def snapshot(self) -> dict:
         """Everything needed to carry this world on later (see ``restore``). The
@@ -174,6 +176,7 @@ class Simulation:
         self.epoch = getattr(self, "epoch", 0) + 1
         self.memory.reset()
         self.memory.load([Memory(**m) for m in snap["memory"]])
+        self.chronicle = Chronicle()  # (a save from before the chronicle has none of its own)
         world = snap["world"]
         world.controlled.clear()  # (nobody's body is the player's any more)
         self.engine.world = world
@@ -495,8 +498,10 @@ class Simulation:
                         if w["end"] - now > 1 and (now - w["start"]) % beat == 0]
 
         # 6. Memory logging + births.
+        god_lines = list(self.god_log)
         log_lines = self.god_log + self._process_events(self.state["events"], lines, now)
         log_lines += self.director.tick(self, now)
+        self.chronicle.note(self, now, log_lines, god_lines)
         powers.earn(self, self.state["events"], now)
         self.god_log = []
         self._collect_voices(now)
@@ -1288,6 +1293,7 @@ class Simulation:
                     out.append(DEATHS[e["cause"]].format(nm(a)))
                 else:
                     out.append(f"💀 {nm(a)} died of {e['cause']}")
+                self.chronicle.died(self, a, out[-1], tick)
                 out.extend(self._funeral(a, tick, nm))
                 out.extend(self._pass_on_home(a, nm))
             elif t == "build":
@@ -1568,6 +1574,8 @@ class Simulation:
             "animals": self.state.get("animals", []),
             "happenings": self.director.happened,  # this tick's big events (wildfire, festival...)
             "god": {"mode": self.cfg.god_mode, "faith": self.faith, "believers": len(self.believers)},
+            # the written history (see chronicle.py): sent again only when "chron_rev" changes
+            "chron_rev": self.chronicle.rev, "chronicle": self.chronicle.recent(),
         }
         self.last_frame = frame
         return frame

@@ -51,6 +51,7 @@ export function connect() {
       if (!msg.menu && !params.has("bare")) helpOnFirstVisit();  // (once the world is under way)
     } else if (msg.type === "frame") {
       // the map changes on few ticks, so the server leaves out the parts we already have
+      if (!msg.chronicle) msg.chronicle = (state.latest && state.latest.chronicle) || [];  // (sent only when it changes)
       for (const part of ["tiles", "terrain"]) {
         if (msg[part]) continue;
         if (!state.latest) return;
