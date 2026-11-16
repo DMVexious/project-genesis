@@ -487,3 +487,4 @@ body.listening #listen { display: block; animation: listen 1.2s ease-in-out infi
 #book p { margin: 4px 0 0; font: 14px/1.5 Georgia, "Times New Roman", serif; color: var(--ink); }
 #log-box { margin-top: 10px; }
 #log-box summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.health-notes { font-size: 12px; color: #e8b0a0; background: rgba(120, 40, 30, .18); border-radius: 4px; padding: 3px 7px; margin-top: 4px; }

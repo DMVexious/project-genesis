@@ -17,9 +17,9 @@ import random
 from .engine.defs import ITEMS, POP_LIMIT, WEATHERS
 from .traits import BELIEFS, VOICES
 
-FIRST_EVENT = 600      # ticks before anything happens (~2 minutes)
-CHECK_EVERY = 120      # ticks between rolls of the dice
-MIN_GAP = 700          # ticks after one event before the next can happen
+FIRST_EVENT = 1800     # ticks before anything happens (~7 minutes: well into the first day)
+CHECK_EVERY = 300      # ticks between rolls of the dice
+MIN_GAP = 2400         # ticks after one event before the next can happen (~2 days at most a pair of them)
 
 
 def _cheb(ax, ay, bx, by) -> int:

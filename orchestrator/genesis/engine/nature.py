@@ -12,7 +12,7 @@ from .defs import (ANIMAL_ID_BASE, ANIMALS, ASH_UNITS, BURN_UNITS, CATCH_ODDS, D
                    ELDER_AGE, FIRE_HURT, FLAMMABLE, IMMUNE_UNITS, GOTO_LIMIT, MAX_BLAZES, MAX_WOLVES, OBJECTS, SEASON_DAYS,
                    SEASON_GROWTH, SEASON_WEATHER, SEASONS, SICK_UNITS, SIGHT, START_HOUR, STAT_MAX,
                    TEACH_EVERY, TEACH_XP, TREE_WINTER_GROWTH, WARM_REACH, WATER, WEATHER_UNITS, WEATHERS,
-                   WOLF_REST)
+                   WOLF_REST, BAD_WATER_ODDS, BLEED_EVERY, ILLNESSES, INFECT_ODDS, WOUND_MAX, health_cap)
 
 
 def cheb(ax, ay, bx, by) -> int:
@@ -232,7 +232,10 @@ def warm(w, n) -> bool:
 
 def bodies(w, phase: int):
     weather = WEATHERS[w.weather]
-    cold_season = season_of(w.tick) == "winter" or weather.cold
+    season = season_of(w.tick)
+    cold_season = season == "winter" or weather.cold
+    thirsty = season == "summer" or w.weather == "drought"
+    wells = {o.village for o in w.objs.values() if o.kind == "well" and o.progress >= 100} if thirsty else set()
     for n in list(w.npcs):
         if not n.alive:
             continue
@@ -247,33 +250,71 @@ def bodies(w, phase: int):
                 fall_ill(w, n, "cold")
             if not was:
                 w.events.append({"type": "cold", "npc": n.id})
-        # illness: it saps strength, passes to whoever is close, and runs its course
+        # a wound: it bleeds and may go bad unless tended; it closes faster with rest, quicker still poulticed
+        if n.wound:
+            n.wound = max(0, n.wound - (3 if n.treated else 2 if n.asleep else 1))
+            if not n.treated:
+                if phase % BLEED_EVERY == 0:
+                    n.health = max(0, n.health - 1)
+                if not n.sick and w.rng.below(1000) < INFECT_ODDS:
+                    fall_ill(w, n, "wound", kind="infection")
+            if n.wound == 0:
+                n.treated = False
+                w.events.append({"type": "healed", "npc": n.id})
+        # dirty water: in the heat, a village with no well drinks from wherever it can
+        if thirsty and not n.sick and not n.immune and n.village not in wells \
+                and w.rng.below(1000) < BAD_WATER_ODDS:
+            fall_ill(w, n, "water", kind="belly")
+        # illness: it saps strength, a fever passes to whoever is close, and it runs its course
         n.immune = max(0, n.immune - 1)
         if n.sick:
-            n.sick = max(0, n.sick - (2 if n.asleep else 1))
-            if phase % 3 == 0:
+            ill = ILLNESSES.get(n.ailment) or ILLNESSES["fever"]
+            n.sick = max(0, n.sick - (2 if n.asleep else 1) - (1 if n.treated else 0))
+            if phase % 3 == 0 and not (n.treated and phase % 2):
                 n.health = max(0, n.health - (2 if n.age >= ELDER_AGE else 1))
             if phase % 2 == 0:
                 n.energy = max(0, n.energy - 1)
-            for o in w.npcs:
-                if o is not n and o.alive and not o.sick and not o.immune and cheb(o.x, o.y, n.x, n.y) <= 1 \
-                        and w.rng.below(100) < CATCH_ODDS:
-                    fall_ill(w, o, "caught", n.id)
+            if n.ailment == "belly":  # nothing stays down
+                n.hunger = max(0, n.hunger - 1)
+            if ill["catching"]:
+                for o in w.npcs:
+                    if o is not n and o.alive and not o.sick and not o.immune and cheb(o.x, o.y, n.x, n.y) <= 1 \
+                            and w.rng.below(100) < CATCH_ODDS:
+                        fall_ill(w, o, "caught", n.id)
             if n.health <= 0:
-                w.kill(n, "illness")
+                w.kill(n, {"fever": "illness", "belly": "a bad stomach", "infection": "an infected wound"}
+                       .get(n.ailment, "illness"))
             elif n.sick == 0:
                 n.immune = IMMUNE_UNITS
-                w.events.append({"type": "recover", "npc": n.id})
+                w.events.append({"type": "recover", "npc": n.id, "ailment": n.ailment})
+                n.ailment = ""
+                if not n.wound:
+                    n.treated = False
+        if "frailty" in n.ailments and phase % 2:
+            n.energy = max(0, n.energy - 1)
+        n.health = min(n.health, health_cap({"ailments": n.ailments}))
         if n.alive and n.health <= 0:
             w.kill(n, "the cold")
     if phase % TEACH_EVERY == 0:
         teach(w)
 
 
-def fall_ill(w, n, how: str, source: int = -1, units: int = 0):
-    lo, hi = SICK_UNITS
+def fall_ill(w, n, how: str, source: int = -1, units: int = 0, kind: str = "fever"):
+    lo, hi = (ILLNESSES.get(kind) or ILLNESSES["fever"])["units"]
     n.sick = units or lo + w.rng.below(hi - lo + 1)
-    w.events.append({"type": "sick", "npc": n.id, "how": how, "source": source})
+    n.ailment = kind
+    n.treated = False
+    w.events.append({"type": "sick", "npc": n.id, "how": how, "source": source, "ailment": kind})
+
+
+def wound(w, n, dmg: int):
+    """A hit that draws blood leaves a wound: the harder the hit, the longer it takes to close."""
+    if dmg >= 5 and n.alive:
+        was = n.wound
+        n.wound = min(WOUND_MAX, n.wound + dmg * 2)
+        n.treated = False
+        if not was:
+            w.events.append({"type": "wounded", "npc": n.id})
 
 
 def teach(w):
@@ -418,6 +459,7 @@ def bite(w, a, n):
     hit = w.rng.below(100) < max(35, 65 - 3 * (n.attrs["agility"] - 5) - 2 * n.level("combat"))
     dmg = spec.damage[0] + w.rng.below(spec.damage[1] - spec.damage[0] + 1) if hit else 0
     n.health = max(0, n.health - dmg)
+    wound(w, n, dmg)
     w.events.append({"type": "mauled", "npc": n.id, "animal": a.id, "kind": a.kind, "hit": hit, "damage": dmg})
     if n.health <= 0:
         w.kill(n, "wolves")

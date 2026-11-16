@@ -15,7 +15,7 @@ from .defs import (ACTIONS, ATTR_AVERAGE, BUILDINGS, COST_ATTACK, COST_DEFEND, C
                    GESTATION, GOTO_BIT, GOTO_LIMIT, INTERACTIONS, ITEMS, MATE_COOLDOWN, MATE_PRIVACY, MATE_SOCIAL,
                    MATURE_AGE, MAX_TARGETS, OBJECTS, POP_LIMIT, RECIPES, SIGHT, SLEEP_ENERGY, STAT_MAX, TALK_SOCIAL,
                    TERRAIN, EDIBLE, FISH_REGROW, KEEP_FOOD, TOOL_FOR, WATER, WORK_BASE, WORK_PER_LEVEL, can_afford,
-                   harvest_yield, tire_rate, trade_terms)
+                   harvest_yield, tire_rate, trade_terms, RAW_ODDS, WOUND_MAX)
 from . import nature
 from .defs import ANIMALS
 from .path import build_site, scan
@@ -157,6 +157,8 @@ def _(w, n, act, opt):
     bonus = max([0] + [o.spec.cook_bonus for o in w.adjacent_objs(n) if o.progress >= 100])
     n.hunger = min(STAT_MAX, n.hunger + ITEMS[what].food + bonus)
     w.events.append({"type": "eat", "npc": n.id, "cooked": bonus > 0, "what": what})
+    if what == "fish" and not bonus and not n.sick and not n.immune and w.rng.below(100) < RAW_ODDS:
+        nature.fall_ill(w, n, "raw", kind="belly")  # (raw fish: cook it at a fire)
 
 
 # --- harvesting ------------------------------------------------------------------
@@ -204,7 +206,7 @@ def _run_harvest(kind):
     return run
 
 
-for _kind in ("chop", "forage", "mine"):
+for _kind in ("chop", "forage", "mine", "pick"):
     offers(_kind)(_offer_harvest(_kind))
     runs(_kind)(_run_harvest(_kind))
 
@@ -393,6 +395,65 @@ def _(w, n, act, opt):
         del v.stock[k]
     n.give(k, take)
     w.events.append({"type": "withdraw", "npc": n.id, "what": k, "n": take, "village": v.id})
+
+
+# --- healing ----------------------------------------------------------------------
+def _troubled(o) -> str:
+    """What a poultice would help with on someone ("" = nothing it can do)."""
+    if o.wound and not o.treated:
+        return "wound"
+    if o.sick and not o.treated:
+        return {"belly": "bad stomach", "infection": "infected wound"}.get(o.ailment, "fever")
+    return ""
+
+
+def _poultice(w, healer, patient):
+    """A poultice on someone: the wound stops bleeding and closes fast, an illness eases.
+    The better the healer, the more it does."""
+    healer.give("poultice", -1)
+    skill = healer.level("healing")
+    patient.treated = True
+    if patient.wound:
+        patient.wound = max(1, patient.wound * (6 - min(4, skill // 2)) // 8)
+    if patient.sick:
+        patient.sick = max(1, patient.sick * (6 - min(4, skill // 2)) // 8)
+        patient.health = min(STAT_MAX, patient.health + 2 + skill)
+
+
+@offers("treat")
+def _(w, n, ctx):
+    trouble = _troubled(n)
+    return [{"kind": "treat", "trouble": trouble}] if trouble and n.have("poultice") else []
+
+
+@runs("treat")
+def _(w, n, act, opt):
+    if not n.have("poultice") or not _troubled(n):
+        return w.fail(n, "treat")
+    _poultice(w, n, n)
+    w.events.append({"type": "treat", "npc": n.id, "target": n.id})
+
+
+@offers("tend")
+def _(w, n, ctx):
+    if not n.have("poultice"):
+        return []
+    out = []
+    for o in ctx.others:
+        if o.alive and cheb(o.x, o.y, n.x, n.y) <= 1:
+            trouble = _troubled(o)
+            if trouble:
+                out.append({"kind": "tend", "target": o.id, "trouble": trouble})
+    return out[:MAX_TARGETS]
+
+
+@runs("tend")
+def _(w, n, act, opt):
+    o = w.npc(act["target"])
+    if o is None or not o.alive or cheb(o.x, o.y, n.x, n.y) > 1 or not n.have("poultice") or not _troubled(o):
+        return w.fail(n, "tend")
+    _poultice(w, n, o)
+    w.events.append({"type": "tend", "npc": n.id, "target": o.id})
 
 
 @offers("pray")
@@ -618,8 +679,9 @@ def _hit_bonus(n) -> int:
 
 
 def hit_chance(a, b) -> int:
-    """Percent chance that ``a`` lands a blow on ``b``."""
-    return max(40, min(95, 75 + 2 * a.level("combat") - 2 * (b.attrs["agility"] - ATTR_AVERAGE)))
+    """Percent chance that ``a`` lands a blow on ``b`` (failing eyes miss more)."""
+    eyes = 15 if "sight" in a.ailments else 0
+    return max(30, min(95, 75 + 2 * a.level("combat") - 2 * (b.attrs["agility"] - ATTR_AVERAGE) - eyes))
 
 
 @option("fight")
@@ -630,6 +692,7 @@ def attack(w, a, b):
     if hit:
         dmg = max(1, 8 + w.rng.below(8) + _hit_bonus(a))
         b.health = max(0, b.health - dmg)
+        nature.wound(w, b, dmg)
     w.events.append({"type": "attack", "npc": a.id, "target": b.id, "hit": hit,
                      "damage": dmg, "retaliation": False})
     if b.health <= 0:
@@ -639,6 +702,7 @@ def attack(w, a, b):
         rdmg = max(1, 5 + w.rng.below(6) + _hit_bonus(b))
         w.train(b, "combat", 5)  # fighting back is practice too
         a.health = max(0, a.health - rdmg)
+        nature.wound(w, a, rdmg)
         _spend(b, COST_DEFEND)
         w.events.append({"type": "attack", "npc": b.id, "target": a.id, "hit": True,
                          "damage": rdmg, "retaliation": True})

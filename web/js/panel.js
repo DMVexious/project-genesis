@@ -198,6 +198,7 @@ export function renderPanel(f) {
         <div class="bar"><span>${BAR_LABELS[k]}</span>
         <span class="track"><span class="fill" style="display:block;width:${sel[k]}%;background:${BAR_COLORS[k]}"></span></span>
         <span>${sel[k]}</span></div>`).join("")}
+      ${healthNotes(sel)}
       <div class="sub">Attributes</div>
       ${attrCells(sel)}
       <div class="sub">Skills</div>
@@ -260,6 +261,17 @@ function renderBook(f) {
         <div class="eh">${BOOK_ICON[e.kind] || "📜"} <b>${esc(e.title)}</b>${e.llm ? LLM_MARK : ""}</div>
         <p>${esc(e.text)}</p></li>`).join("")
     : `<li class="hint">Nothing written yet: the first entry comes at the end of the first day.</li>`;
+}
+
+// Wounds, illness and the troubles of old age, in a line or two under the bars.
+const ILL = { fever: "🤒 a fever", belly: "🤢 a bad stomach", infection: "🩸 an infected wound" };
+const OLD = { joints: "stiff joints", heart: "a weak heart", frailty: "frailty", sight: "failing eyes" };
+function healthNotes(n) {
+  const out = [];
+  if (n.sick) out.push(`${ILL[n.ailment] || ILL.fever}${n.treated ? " (treated)" : ""}`);
+  if (n.wound) out.push(`🩸 wounded${n.treated ? " (poultice on)" : ", untended"}`);
+  if ((n.ailments || []).length) out.push(`🧓 ${n.ailments.map((k) => OLD[k] || k).join(", ")}`);
+  return out.length ? `<div class="health-notes">${out.map(esc).join("<br>")}</div>` : "";
 }
 
 export const KIND_ICON = { talk: "💬", fight: "⚔️", trade: "🤝", give: "🎁", mate: "💞", voice: "☁️" };

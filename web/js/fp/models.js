@@ -197,6 +197,12 @@ const MAKE = {
       if (!spent) b.block(x, 0.17 * s, z, 0.24 * s, 0.09 * s, 0.24 * s, 0xc0392b).block(x, 0.26 * s, z, 0.12 * s, 0.04, 0.12 * s, 0xc0392b);
     }
   },
+  herb(b, { spent }) {
+    for (const [x, z, h] of [[-0.15, -0.1, 0.22], [0.12, 0.05, 0.3], [-0.02, 0.18, 0.18], [0.2, -0.18, 0.16]]) {
+      b.block(x, 0, z, 0.05, spent ? h * 0.4 : h, 0.05, 0x6a8a4a);
+      if (!spent) b.block(x, h * 0.6, z, 0.16, 0.1, 0.16, 0x6aa85a).block(x, h, z, 0.06, 0.05, 0.06, 0xf4f8fb, { jitter: 0 });
+    }
+  },
   rock(b, { ground, variant }) {
     const c = ground === "snow" ? 0x9a978f : STONE;
     b.block(0, 0, 0, 0.75, 0.42, 0.65, c, { jitter: 0.08 }).block(0.12, 0.42, -0.05, 0.45, 0.2, 0.4, shade(c, 1.08))

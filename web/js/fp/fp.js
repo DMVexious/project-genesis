@@ -140,7 +140,7 @@ function stepHeld() {
 const ray = new THREE.Raycaster(), center = new THREE.Vector2(0, 0);
 ray.far = 6;
 const USE = { tree: "chop the tree", bush: "pick berries", fruit: "pick apples", cactus: "pick the fruit",
-              mushroom: "pick mushrooms", rock: "mine the rock", site: "help build", drop: "pick it up" };
+              mushroom: "pick mushrooms", herb: "gather herbs", rock: "mine the rock", site: "help build", drop: "pick it up" };
 function lookAt() {
   ray.setFromCamera(center, fp.cam);
   const hits = ray.intersectObjects([...peopleMeshes(), ...objectMeshes(), ...groundMeshes()], true);

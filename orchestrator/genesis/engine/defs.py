@@ -26,7 +26,11 @@ SLEEP_ENERGY = 20
 COST_ATTACK = 6
 COST_DEFEND = 4
 COST_MATE = 15
-YEAR = 20                # world-time units in a year of someone's life (~22 s at the default speed)
+# The pace of life. One unit of world time is UNIT_TICKS ticks (~5.5 s at the default 220 ms a tick):
+# hunger, tiredness, ageing, illness and regrowth move on once per unit. A day is ~5 minutes, a
+# year of someone's life ~2.4 minutes, a whole life ~3 hours: slow enough to live one.
+UNIT_TICKS = 25
+YEAR = 26                # world-time units in a year of someone's life
 MATURE_AGE = 16 * YEAR   # children grow up
 START_AGE = 20 * YEAR    # the founders (give or take a few years)
 POP_CAP = 30
@@ -38,7 +42,7 @@ TALK_SOCIAL = 5
 MATE_SOCIAL = 30
 MATE_COOLDOWN = 100      # world-time units a parent rests before another child
 MATE_PRIVACY = 1         # nobody else may be this close when two NPCs mate
-GESTATION = 40           # world-time units between conceiving and the birth
+GESTATION = 20           # world-time units between conceiving and the birth (~3/4 of a year)
 SETTLE_RADIUS = 3        # the founders start within this many tiles of each other
 DROP_TTL = 300           # world-time units before things left on the ground rot away
 # villages
@@ -55,10 +59,10 @@ WORK_BASE = 30           # work one construction session does (out of a building
 WORK_PER_LEVEL = 7       # ...and how much more for each level of building skill
 KEEP_FOOD = 2            # food kept back when putting things in the village store
 ELDER_AGE = 60 * YEAR    # from here on, each unit of world time may be the last
-OLD_AGE_ODDS = 65000     # death chance per unit = (age - ELDER_AGE) / OLD_AGE_ODDS (most die at 70-80)
+OLD_AGE_ODDS = 110000    # death chance per unit = (age - ELDER_AGE) / OLD_AGE_ODDS (most die at 70-80)
 
 # the world's clock (its own calendar: a villager's year of life is much shorter, see YEAR)
-DAY_TICKS = 240          # ticks from one dawn to the next (~53 s at the default speed)
+DAY_TICKS = 1350         # ticks from one dawn to the next (~5 minutes at the default speed; 54 units)
 SEASON_DAYS = 6          # days in each season
 SEASONS = ("spring", "summer", "autumn", "winter")
 DAWN, DUSK = 0.22, 0.78  # parts of the day: night is before dawn and after dusk
@@ -73,6 +77,26 @@ WARM_REACH = 2           # this close to a campfire (or beside a home) keeps the
 SICK_UNITS = (30, 60)    # how long an illness lasts (world-time units, at random in this range)
 IMMUNE_UNITS = 400       # after a fever, world-time units before it can be caught again
 CATCH_ODDS = 1           # percent chance per unit of catching an illness from someone beside you
+# wounds, illness and old age (see nature.bodies and world.world_time)
+WOUND_MAX = 60           # world-time units an untended wound may take to close
+BLEED_EVERY = 4          # an open, untended wound costs a point of health this often (units)
+INFECT_ODDS = 6          # per thousand, each unit, that an untended wound turns bad
+RAW_ODDS = 12            # percent chance raw fish upsets the stomach
+BAD_WATER_ODDS = 3       # per thousand, each unit in summer or drought, of a bad stomach in a village with no well
+AILMENT_EVERY = 6        # years between the troubles of old age (from ELDER_AGE on)
+# what illness does: how long it lasts (units) and whether it passes to whoever is close
+ILLNESSES = {
+    "fever": {"units": (30, 60), "catching": True, "label": "a fever"},
+    "belly": {"units": (10, 22), "catching": False, "label": "a bad stomach"},
+    "infection": {"units": (25, 45), "catching": False, "label": "an infected wound"},
+}
+# the troubles of old age, gathered one at a time (see AILMENT_EVERY)
+AILMENTS = {
+    "joints": "stiff joints (slow at everything)",
+    "heart": "a weak heart (never quite back to full health)",
+    "frailty": "frailty (tires quickly)",
+    "sight": "failing eyes (misses more often)",
+}
 TEACH_EVERY = 4          # world-time units between an elder's lessons
 TEACH_XP = 3
 
@@ -134,6 +158,8 @@ SKILLS: dict[str, SkillDef] = {s.key: s for s in (
              "better at persuading, trading and courting", renown=0.6),
     SkillDef("mining", "Mining", "Miner", "⛏️", ("strength", "endurance"), "mines faster and gets more stone"),
     SkillDef("fishing", "Fishing", "Fisher", "🎣", ("agility", "intelligence"), "catches fish more often"),
+    SkillDef("healing", "Healing", "Healer", "🩺", ("intelligence", "charisma"),
+             "makes stronger poultices; the sick and hurt mend faster in their care"),
 )}
 ROLE_LEVEL = 3                 # how good someone must be at their best skill to be known for it
 WALK_EXERCISE = 4              # every so many steps walked count toward agility
@@ -246,6 +272,8 @@ ITEMS: dict[str, ItemDef] = {i.key: i for i in (
     ItemDef("axe", "axe", "🪓", cap=1, value=5, tool="chop"),
     ItemDef("pickaxe", "pickaxe", "⛏️", cap=1, value=5, tool="mine"),
     ItemDef("rod", "fishing rod", "🎣", cap=1, value=4, tool="fish"),
+    ItemDef("herbs", "herbs", "🌿", cap=8, value=2),
+    ItemDef("poultice", "poultice", "🩹", cap=4, value=4),
 )}
 EDIBLE = tuple(k for k, i in ITEMS.items() if i.food)
 TOOL_FOR = {i.tool: i.key for i in ITEMS.values() if i.tool}  # action kind -> the tool for it
@@ -277,6 +305,7 @@ RECIPES: dict[str, RecipeDef] = {r.key: r for r in (
     RecipeDef("rod", {"wood": 3}, why="catch fish far more often"),
     RecipeDef("axe", {"wood": 3, "stone": 2}, why="chop faster and get more wood", at="workshop"),
     RecipeDef("pickaxe", {"wood": 3, "stone": 3}, why="mine faster and get more stone", at="workshop"),
+    RecipeDef("poultice", {"herbs": 2}, energy=2, ticks=8, why="treats wounds and sickness"),
 )}
 
 
@@ -344,6 +373,9 @@ OBJECTS: dict[str, ObjectDef] = {o.key: o for o in (
     ObjectDef("cactus", "a cactus", "prickly pear cactus", "K", "k",
               term=("ψ", "92"), spent_term=("ψ", "32"),
               harvest="forage", gives={"food": 1}, harvest_energy=3, regrow=50),
+    ObjectDef("herb", "an herb patch", "patch of healing herbs", "J", "j", blocks=False, spent_blocks=False,
+              term=("♣", "92"), spent_term=("·", "32"),
+              harvest="pick", gives={"herbs": 1}, harvest_energy=2, regrow=60),
     ObjectDef("mushroom", "a mushroom patch", "mushroom patch", "M", "m",
               term=("♧", "95"), spent_term=("♧", "90"),
               harvest="forage", gives={"food": 1}, harvest_energy=1, regrow=30),
@@ -542,6 +574,12 @@ def _name(names, a):
     return names.get(a["target"], "?")
 
 
+def _trouble(me) -> str:
+    if me.get("wound"):
+        return "your wound"
+    return {"belly": "your bad stomach", "infection": "your infected wound"}.get(me.get("ailment"), "your fever")
+
+
 def _d_hunt(a, names, me):
     beast = ANIMALS[a["what"]]
     if beast.hunter:
@@ -556,6 +594,11 @@ ACTIONS: dict[str, ActionDef] = {a.kind: a for a in (
     ActionDef("chop", 9, _d_harvest, timed=True, skill="woodcutting", xp=10, attr="strength"),
     ActionDef("forage", 6, _d_harvest, timed=True, skill="foraging", xp=5, attr="agility"),
     ActionDef("mine", 10, _d_harvest, timed=True, skill="mining", xp=10, attr="strength"),
+    ActionDef("pick", 5, _d_harvest, timed=True, skill="healing", xp=4, attr="agility"),
+    ActionDef("treat", 6, lambda a, names, me: f"Put a poultice on {_trouble(me)} (you have {me['inv'].get('poultice', 0)})",
+              timed=True, skill="healing", xp=6),
+    ActionDef("tend", 8, lambda a, names, me: f"Tend to {_name(names, a)}'s {a['trouble']} with a poultice",
+              ident=("target",), timed=True, skill="healing", xp=12, attr="intelligence"),
     ActionDef("fish", 12, lambda a, names, me: "Fish in the water beside you (a fish or two, if they bite)",
               timed=True, skill="fishing", xp=8, attr="agility"),
     ActionDef("plant", 6, lambda a, names, me: "Plant a sapling beside you from a bit of wood (it grows into a tree)",
@@ -613,7 +656,17 @@ def speed_factor(stats: dict, act: dict) -> float:
         f *= 1.15 - 0.03 * attr_of(stats, d.attr)         # 5 is average; 10: 15% quicker
     if act["kind"] in TOOL_FOR and stats.get("inv", {}).get(TOOL_FOR[act["kind"]]):
         f *= 0.7                                          # the right tool in hand
+    if "joints" in stats.get("ailments", ()):
+        f *= 1.3                                          # old bones
+    if d.walk or act["kind"] in ("step", "wander"):
+        if stats.get("wound", 0) > WOUND_MAX // 3:
+            f *= 1.5                                      # a limp
     return f
+
+
+def health_cap(stats: dict) -> int:
+    """The most health someone can get back to: a weak heart never quite recovers."""
+    return STAT_MAX - (25 if "heart" in stats.get("ailments", ()) else 0)
 
 
 def same_action(a: dict, b: dict) -> bool:
@@ -674,7 +727,8 @@ EVENT_EMOJI = {"chop": "🪓", "build": "🔨", "attack": "💢", "birth": "👶
                "withdraw": "📦", "pray": "🙏", "found": "🏘️", "path": "",
                "hunt": "🏹", "mauled": "🐺", "douse": "💦", "burn": "🔥",
                "lightning": "⚡", "sick": "🤒", "recover": "💪",
-               "cold": "🥶", "wolves": "", "ignite": ""}  # ("": no emoji, only the front end's effects and sounds)
+               "cold": "🥶", "wolves": "", "ignite": "", "wounded": "🩸", "healed": "", "treat": "🩹",
+               "tend": "🩹", "pick": "🌿", "ailment": ""}  # ("": no emoji, only the front end's effects and sounds)
 FX_EVENTS = frozenset(EVENT_EMOJI)
 
 

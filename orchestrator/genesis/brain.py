@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from .engine.defs import (ACTIONS, ANIMALS, ATTR_AVERAGE, ATTRS, BUILDINGS, INTERACTIONS, ITEMS, MATURE_AGE,
                           OBJECTS, SKILLS, WEATHERS, attr_of, cost_text, describe_action, option_text, role_of, skill_of,
-                          years)  # noqa: F401  (describe_action is re-exported)
+                          years, AILMENTS)  # noqa: F401  (describe_action is re-exported)
 from .traits import BELIEFS, TRAIT_HINTS, Genome, belief_text, voice_text
 
 log = logging.getLogger(__name__)
@@ -134,7 +134,11 @@ def action_prompt(v: NpcView, names: dict[int, str]) -> list[dict]:
                 "life_stage": "elder (cannot have children)" if v.elder else
                               ("child" if s["age"] < MATURE_AGE else "adult"),
                 "inventory": dict(s.get("inv", {})),
-                **({"sick": "you have a fever"} if s.get("sick") else {}),
+                **({"sick": "you have " + ILL_TEXT.get(s.get("ailment") or "fever", "a fever")
+                    + ("" if not s.get("treated") else " (treated: it's easing)")} if s.get("sick") else {}),
+                **({"wound": "you're wounded" + (" (bandaged with a poultice)" if s.get("treated") else
+                                                 ": it bleeds and could go bad unless tended")} if s.get("wound") else {}),
+                **({"old_age": [AILMENTS[k] for k in s.get("ailments", ()) if k in AILMENTS]} if s.get("ailments") else {}),
                 **({"cold": "you are freezing: get warm"} if s.get("cold") else {}),
                 "can_carry_at_most": s.get("caps") or {i.key: i.cap for i in ITEMS.values() if i.cap},
                 **({"standing_on": v.ground} if v.ground else {})},
@@ -190,12 +194,17 @@ CASUAL = (
 )
 
 
+ILL_TEXT = {"fever": "a fever", "belly": "a bad stomach", "infection": "an infected wound"}
+
+
 def current_mood(stats: dict) -> str:
     """How an NPC feels right now, in a word or two (it colours what they say)."""
     if stats["health"] < 40:
         return "hurt and in pain"
     if stats.get("sick"):
-        return "sick with a fever"
+        return "sick with " + ILL_TEXT.get(stats.get("ailment") or "fever", "a fever")
+    if stats.get("wound") and not stats.get("treated"):
+        return "wounded and sore"
     if stats.get("cold"):
         return "freezing cold"
     if stats["hunger"] < 25:
@@ -587,7 +596,7 @@ def _(v, a):
     score = (100 if e == 0 else (85 if e < 25 else 4)) + (12 if v.genome.work == "Lazy" else 0)
     if night(v) and e < 75:  # night: bed (at home, if home is near enough to get to)
         score = max(score, 62 if v.home is None or v.home <= 1 else 30)
-    if v.stats.get("sick") and e < 90:
+    if (v.stats.get("sick") or v.stats.get("wound", 0) > 20) and e < 90:
         score = max(score, 58)  # rest it off
     return score
 
@@ -760,8 +769,38 @@ def _(v, a):
     return score + (knack(v.stats, "building", "intelligence") if score > 5 else 0)
 
 
+def hurting(v) -> bool:
+    return bool((v.stats.get("sick") or v.stats.get("wound")) and not v.stats.get("treated"))
+
+
+def healer(v) -> bool:
+    return role_of(v.stats.get("skills", {})) == "healing"
+
+
+@scorer("treat")
+def _(v, a):
+    return 88  # (a poultice on: do it now)
+
+
+@scorer("tend")
+def _(v, a):
+    return 75 + (15 if healer(v) else 0) + (10 if v.genome.social == "Charismatic" else 0)
+
+
+@scorer("pick")
+def _(v, a):
+    herbs = have(v.stats, "herbs")
+    if hurting(v) and not have(v.stats, "poultice"):
+        return 70
+    return (35 if healer(v) else 12) + knack(v.stats, "healing", "intelligence") if herbs < 4 else 3
+
+
 @scorer("craft")
 def _(v, a):
+    if a["what"] == "poultice":
+        if have(v.stats, "poultice") >= 2:
+            return 2
+        return 80 if hurting(v) else (40 if healer(v) else 14) + knack(v.stats, "healing", "intelligence")
     if a["what"] == "spear":
         return (60 if v.genome.aggression in ("Hostile", "Bloodthirsty") else 12) + knack(v.stats, "crafting")
     return 15 + knack(v.stats, "crafting", "intelligence")
@@ -827,7 +866,13 @@ def _goto_site(v, a):
     return {"Industrious": 40, "Visionary": 36, "Lazy": 6}.get(v.genome.work, 24) - a["dist"] / 2
 
 
-GOTO_SCORERS = {"tree": _goto_tree, "bush": _goto_bush, "farm": _goto_farm, "fire": _goto_fire,
+def _goto_herb(v, a):
+    if hurting(v) and not have(v.stats, "poultice") and have(v.stats, "herbs") < 2:
+        return 60 - a["dist"]
+    return (28 if healer(v) and have(v.stats, "herbs") < 4 else 4) - a["dist"] / 2
+
+
+GOTO_SCORERS = {"herb": _goto_herb, "tree": _goto_tree, "bush": _goto_bush, "farm": _goto_farm, "fire": _goto_fire,
                 "hut": _goto_shelter, "house": _goto_shelter, "rock": _goto_rock, "storehouse": _goto_store,
                 "workshop": _goto_workshop, "shrine": _goto_shrine, "site": _goto_site, "blaze": _goto_blaze}
 

@@ -343,6 +343,12 @@ export function makeTextures(scene) {
   sprite("mushroom_bare", 20, 14, [],
     [[5, 10, 2, 3, 0xd8ccb0], [11, 10, 2, 3, 0xd8ccb0], [4, 9, 4, 1, 0x8a5a3a], [10, 9, 4, 1, 0x8a5a3a]]);
 
+  // Herbs: a low clump of pale leaves with small white flowers; picked, just the stalks.
+  sprite("herb", 18, 12, [[2, 5, 5, 6, 0x5f9a4a], [7, 2, 5, 9, 0x6aa85a], [12, 5, 4, 6, 0x5f9a4a]],
+    [[4, 4, 1, 1, 0xf4f8fb], [9, 1, 1, 1, 0xf4f8fb], [10, 3, 1, 1, 0xf4f8fb], [13, 4, 1, 1, 0xf4f8fb],
+     [8, 5, 1, 5, 0x8ac87a], [3, 7, 1, 3, 0x8ac87a]]);
+  sprite("herb_bare", 18, 12, [], [[4, 8, 1, 3, 0x6a8a4a], [9, 7, 1, 4, 0x6a8a4a], [13, 8, 1, 3, 0x6a8a4a]]);
+
   // Huts: four styles (thatch, red tile, slate, log cabin).
   const hut = (key, roof, roofHi, wall, wallLine) => {
     solids([[5, 17, 20, 15, wall]]);

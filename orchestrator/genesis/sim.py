@@ -24,7 +24,7 @@ from .engine.path import scan
 from .engine.defs import (ACTIONS, ANIMALS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, GESTATION, INTERACTIONS,
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
-from .engine.defs import WATER
+from .engine.defs import UNIT_TICKS, WATER
 from .chronicle import Chronicle
 from .events import Director
 from . import powers
@@ -40,14 +40,20 @@ LOG_EMOJI = "💀🪦🏠🌀✨💞👶🎁🤝🫳⭐⚡❤🍖🎮🗣🏹�
 
 # (chronicle lines for the living world: see Simulation._nature_event)
 NATURE_EVENTS = frozenset({"season", "weather", "hunt", "mauled", "wolves", "ignite", "douse", "burn", "sick",
-                           "recover", "teach"})
+                           "recover", "teach", "wounded", "healed", "treat", "tend", "ailment"})
+ILL_WORDS = {"fever": "a fever", "belly": "a bad stomach", "infection": "an infected wound"}
+AILMENT_LINES = {"joints": "{}'s joints have gone stiff with age", "heart": "{}'s heart is growing weak",
+                 "frailty": "{} is getting frail", "sight": "{}'s eyes are failing"}
+AILMENT_MEMORY = {"joints": "My joints ache all the time now.", "heart": "My heart isn't what it was.",
+                  "frailty": "I tire so easily these days.", "sight": "I can't see as well as I used to."}
 SEASON_LINES = {"spring": "🌱 Spring comes: the land wakes up", "summer": "☀️ Summer comes",
                 "autumn": "🍂 Autumn comes: the leaves turn", "winter": "❄️ Winter comes: nothing will grow until spring"}
 WEATHER_LINES = {"clear": "☀️ The skies clear", "rain": "🌧️ Rain sets in", "storm": "⛈️ A thunderstorm rolls in",
                  "fog": "🌫️ Fog rolls in", "snow": "🌨️ Snow begins to fall",
                  "drought": "🥵 A drought sets in: the land is parched"}
 DEATHS = {"wolves": "🐺 {} was killed by wolves", "illness": "🤒 {} died of a fever", "fire": "🔥 {} died in a fire",
-          "the cold": "❄️ {} froze to death"}
+          "the cold": "❄️ {} froze to death", "a bad stomach": "🤢 {} died of a sickness of the gut",
+          "an infected wound": "🩸 {} died of an infected wound"}
 
 
 @dataclass
@@ -80,7 +86,7 @@ class SimConfig:
     width: int = 80
     height: int = 56
     population: int = 3       # founders; they start together and the village grows from them
-    decay_every: int = 5      # ticks per unit of world time (hunger, energy, ageing, regrowth)
+    decay_every: int = UNIT_TICKS  # ticks per unit of world time (hunger, energy, ageing, regrowth)
     plan_max_ticks: int = 12  # re-ask the brain at least this often while walking (steps)
     llm_interval: int = 18    # ticks between an NPC's LLM goal checks
     work_beat: int = 3        # a working NPC swings its tool (animation + sound) every this many ticks
@@ -659,7 +665,8 @@ class Simulation:
                 return
             # a walkable spot: go there; something standing there: go right beside it (not
             # diagonally: things are only used from beside them), then use it
-            target = [w.idx(x, y)] if w.passable(x, y) else                 [w.idx(x + dx, y + dy) for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)) if w.passable(x + dx, y + dy)]
+            target = [w.idx(x, y)] if w.passable(x, y) else \
+                [w.idx(x + dx, y + dy) for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)) if w.passable(x + dx, y + dy)]
             got = self._walk_toward(v, target, choices, sources)
             if got is None:
                 self.order = None
@@ -1392,7 +1399,15 @@ class Simulation:
             self._remember(a, -1, tick, "fire", "I got burned by the fire.", -1)
         elif t == "sick":
             src = e.get("source", -1)
-            if e["how"] == "caught" and src in self.meta:
+            ill = e.get("ailment", "fever")
+            if ill == "belly":
+                why = {"raw": "raw fish", "water": "bad water"}.get(e["how"], "something")
+                out.append(f"🤢 {nm(a)} is sick from {why}")
+                self._remember(a, -1, tick, "sick", f"Something I had ({why}) made me sick to my stomach.", -1)
+            elif ill == "infection":
+                out.append(f"🩸 {nm(a)}'s wound has gone bad")
+                self._remember(a, -1, tick, "sick", "My wound's gone bad. It's hot and it throbs.", -1)
+            elif e["how"] == "caught" and src in self.meta:
                 out.append(f"🤒 {nm(a)} catches a fever from {nm(src)}")
                 self._remember(a, src, tick, "sick", f"I caught a fever off {nm(src)}.", -1)
             elif e["how"] == "cold":
@@ -1402,9 +1417,27 @@ class Simulation:
                 self._remember(a, -1, tick, "sick", "I've come down with a fever.", -1)
             quiet = True
         elif t == "recover":
-            out.append(f"💪 {nm(a)} gets over the fever")
-            self._remember(a, -1, tick, "sick", "My fever finally broke.", 1)
+            what = ILL_WORDS.get(e.get("ailment") or "fever", "the fever")
+            out.append(f"💪 {nm(a)} gets over {what}")
+            self._remember(a, -1, tick, "sick", f"I'm over {what} at last.", 1)
             quiet = True
+        elif t == "wounded":
+            self._remember(a, -1, tick, "hurt", "I'm wounded. It needs tending or it'll go bad.", -1)
+        elif t == "healed":
+            self._remember(a, -1, tick, "hurt", "My wound has closed up.", 1)
+        elif t == "ailment":
+            out.append("🧓 " + AILMENT_LINES[e["ailment"]].format(nm(a)))
+            self._remember(a, -1, tick, "age", AILMENT_MEMORY[e["ailment"]], -1)
+            quiet = True
+        elif t in ("treat", "tend"):
+            b = e["target"]
+            if b == a:
+                self._remember(a, -1, tick, "heal", "I put a poultice on myself.", 1)
+            else:
+                out.append(f"🩹 {nm(a)} tends to {nm(b)}")
+                self._remember(b, a, tick, "heal", f"{nm(a)} looked after me when I was hurting.", 3)
+                self._remember(a, b, tick, "heal", f"I tended to {nm(b)}.", 1)
+            quiet = b == a
         elif t == "teach":
             b, skill = e["target"], SKILLS[e["skill"]].label.lower()
             self._remember(b, a, tick, "teach", f"Old {nm(a)} showed me a thing or two about {skill}.", 1)
@@ -1493,6 +1526,12 @@ class Simulation:
                 what = work["act"].get("what")
                 status = ((OBJECTS[what].emoji if what in OBJECTS else ITEMS[what].emoji if what in ITEMS else "")
                           or EVENT_EMOJI.get(work["act"]["kind"], ""))
+            elif n.get("sick") and n.get("ailment") == "belly":
+                status = "🤢"
+            elif n.get("sick"):
+                status = "🤒"
+            elif n.get("wound") and not n.get("treated"):
+                status = "🩸"
             elif n["hunger"] < 25:
                 status = "🤤"
             elif n["expecting"]:
@@ -1501,7 +1540,9 @@ class Simulation:
                 status = ""
             npcs.append({
                 **{k: n[k] for k in ("id", "x", "y", "alive", "health", "hunger", "energy", "social",
-                                     "inv", "cause", "attrs", "skills", "xp", "role", "caps")},
+                                     "inv", "cause", "attrs", "skills", "xp", "role", "caps", "wound", "treated",
+                                     "ailment", "ailments")},
+                "sick": n["sick"] > 0,
                 "age": years(n["age"]),
                 "name": m.name, "traits": m.genome.to_dict(), "generation": m.generation,
                 "belief": belief_text(m.persona) if m.persona else "",

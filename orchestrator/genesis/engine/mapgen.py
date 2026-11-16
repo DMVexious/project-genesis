@@ -122,10 +122,12 @@ def wet_tiles(world) -> bytearray:
 # --- what grows where ------------------------------------------------------------
 # terrain -> (object, chance per tile, how strongly it gathers in groves: 0 = evenly spread)
 FLORA: dict[str, tuple[tuple[str, float, float], ...]] = {
-    "grass": (("tree", 0.035, 1.0), ("bush", 0.028, 1.0), ("fruit", 0.006, 0.0), ("rock", 0.010, 0.0)),
-    "forest": (("tree", 0.20, 0.5), ("mushroom", 0.03, 0.0), ("bush", 0.022, 1.0), ("rock", 0.006, 0.0)),
+    "grass": (("tree", 0.035, 1.0), ("bush", 0.028, 1.0), ("fruit", 0.006, 0.0), ("rock", 0.010, 0.0),
+              ("herb", 0.008, 0.5)),
+    "forest": (("tree", 0.20, 0.5), ("mushroom", 0.03, 0.0), ("bush", 0.022, 1.0), ("rock", 0.006, 0.0),
+               ("herb", 0.012, 0.5)),
     "dirt": (("tree", 0.03, 1.0), ("bush", 0.016, 1.0), ("rock", 0.04, 0.0)),
-    "sand": (("cactus", 0.02, 0.0), ("rock", 0.014, 0.0), ("tree", 0.003, 0.0)),
+    "sand": (("cactus", 0.02, 0.0), ("rock", 0.014, 0.0), ("tree", 0.003, 0.0), ("herb", 0.003, 0.0)),
     "stone": (("rock", 0.09, 0.0), ("tree", 0.05, 1.0), ("bush", 0.012, 0.0)),
     "snow": (("tree", 0.04, 1.0), ("rock", 0.05, 0.0)),
 }

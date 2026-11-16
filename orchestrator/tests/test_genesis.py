@@ -75,8 +75,8 @@ class EngineTests(unittest.TestCase):
         e = Engine()
         e.init(9, 12, 12, 3)
         for n in e.world.npcs:
-            n.age = D.ELDER_AGE + 400
-        for _ in range(400):
+            n.age = D.ELDER_AGE + 30 * D.YEAR  # (90: few last long)
+        for _ in range(2000):
             e.step({})
             for n in e.world.npcs:  # keep them fed and rested: only age can kill
                 n.hunger = n.energy = n.health = 100
@@ -1819,6 +1819,12 @@ class HearingTests(unittest.TestCase):
 
 
 class ChronicleTests(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        short = mock.patch("genesis.engine.nature.DAY_TICKS", 240)  # (short days: a few pass quickly)
+        short.start()
+        self.addCleanup(short.stop)
+
     def make(self, talker=None, **kw):
         cfg = dict(seed=7, population=6, width=40, height=30)
         cfg.update(kw)
@@ -1896,3 +1902,73 @@ class ChronicleTests(unittest.TestCase):
         sim.chronicle.god_seen = ["The sky strikes Bo dead", "A light blesses Ka"]
         sim.chronicle.note(sim, 7, [], ["⚡ again"])
         await sim.chronicle.settle()
+
+
+class HealthTests(unittest.TestCase):
+    def world(self):
+        e = Engine()
+        e.init(4, 14, 14, 2)
+        return e, e.world
+
+    def test_a_wound_bleeds_until_a_poultice_goes_on(self):
+        from genesis.engine import nature
+        from genesis.engine.actions import execute
+        e, w = self.world()
+        n = w.npcs[0]
+        nature.wound(w, n, 15)
+        self.assertEqual(n.wound, 30)
+        self.assertTrue(any(ev["type"] == "wounded" for ev in w.events))
+        hp = n.health = 80
+        nature.bodies(w, 4)  # (a unit on which an open wound bleeds)
+        self.assertLess(n.health, hp)
+        n.give("poultice", 1)
+        execute(w, n, {"kind": "treat", "trouble": "wound"}, None)
+        self.assertTrue(n.treated)
+        self.assertEqual(n.have("poultice"), 0)
+        hp = n.health
+        for phase in range(8):
+            nature.bodies(w, phase)
+        self.assertGreaterEqual(n.health, hp - 0)  # (treated: no more bleeding)
+
+    def test_raw_fish_can_upset_the_stomach_and_it_is_not_catching(self):
+        from genesis.engine.actions import execute
+        e, w = self.world()
+        a, b = w.npcs[0], w.npcs[1]
+        sick = 0
+        for _ in range(200):
+            a.sick, a.immune, a.ailment = 0, 0, ""
+            a.give("fish", 1)
+            execute(w, a, {"kind": "eat", "what": "fish"}, None)
+            sick += bool(a.sick)
+        self.assertTrue(5 < sick < 60)  # (about one raw fish in eight)
+        from genesis.engine import nature
+        a.sick, a.ailment = 20, "belly"
+        b.x, b.y = a.x + 1, a.y
+        b.sick = b.immune = 0
+        for phase in range(20):
+            nature.bodies(w, phase)
+        self.assertFalse(b.sick and b.ailment == "belly")
+
+    def test_old_age_brings_ailments_one_at_a_time(self):
+        e, w = self.world()
+        n = w.npcs[0]
+        n.age = D.ELDER_AGE - 1
+        w.world_time(1)
+        self.assertEqual(len(n.ailments), 1)
+        n.age = D.ELDER_AGE + D.AILMENT_EVERY * D.YEAR - 1
+        n.hunger = n.energy = n.health = 100
+        w.world_time(2)
+        self.assertEqual(len(set(n.ailments)), 2)
+        if "heart" in n.ailments:
+            self.assertLessEqual(n.health, 75)
+
+    def test_villagers_from_old_saves_load_well(self):
+        e, w = self.world()
+        n = w.npcs[0]
+        state = n.__reduce_ex__(4)[2]
+        slots = dict(state[1]) if isinstance(state, tuple) else dict(state)
+        for k in ("wound", "treated", "ailment", "ailments"):
+            slots.pop(k, None)
+        fresh = type(n).__new__(type(n))
+        fresh.__setstate__((None, slots))
+        self.assertEqual((fresh.wound, fresh.treated, fresh.ailments), (0, False, ()))

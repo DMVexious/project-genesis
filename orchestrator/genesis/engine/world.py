@@ -16,7 +16,8 @@ from . import mapgen, nature
 from .defs import (ATTR_MAX, ATTR_MIN, ATTRS, BASE_ROOM, DROP_TTL, ELDER_AGE, FISH_REGROW, GOTO_BIT, ITEMS,
                    MIN_FERTILITY, OBJECTS, OLD_AGE_ODDS, PATH_WEAR, SITE, SKILL_MAX, SKILLS, START_AGE, STAT_MAX,
                    TERRAIN, VILLAGE_GAP, VILLAGE_MAX_RADIUS, VILLAGE_RADIUS, WALK_EXERCISE, WATER, WEARABLE,
-                   WEATHER_UNITS, WET_BONUS, WET_REACH, attr_need, learn_rate, skill_need)
+                   WEATHER_UNITS, WET_BONUS, WET_REACH, attr_need, learn_rate, skill_need, AILMENT_EVERY, AILMENTS,
+                   YEAR, health_cap)
 from .npc import Npc
 
 MASK64 = (1 << 64) - 1
@@ -630,8 +631,14 @@ class World:
             n.social = min(STAT_MAX, n.social + 1)
             n.age += 1
             n.rest = max(0, n.rest - 1)
-            if phase % 2 == 0:
-                n.energy = max(0, n.energy - 1)
+            # old age comes on a trouble at a time: stiff joints, a weak heart, frailty, failing eyes
+            if n.age >= ELDER_AGE and (n.age - ELDER_AGE) % (AILMENT_EVERY * YEAR) == 0:
+                left = [k for k in AILMENTS if k not in n.ailments]
+                if left:
+                    got = left[self.rng.below(len(left))]
+                    n.ailments = (*n.ailments, got)
+                    self.events.append({"type": "ailment", "npc": n.id, "ailment": got})
+            n.energy = max(0, n.energy - 1)  # (a unit is long now: tired by the end of a day)
             if n.hunger == 0 or n.energy == 0:
                 if n.hunger == 0:
                     n.health = max(0, n.health - 3)
@@ -639,7 +646,7 @@ class World:
                     n.health = max(0, n.health - 2)
                 if n.health <= 0:
                     self.kill(n, "starvation" if n.hunger == 0 else "exhaustion")
-            elif n.hunger >= 50 and n.energy >= 30 and n.health < STAT_MAX:
+            elif n.hunger >= 50 and n.energy >= 30 and n.health < health_cap({"ailments": n.ailments}):
                 n.health += 1
             if n.alive and n.age >= ELDER_AGE and self.rng.below(OLD_AGE_ODDS) < n.age - ELDER_AGE:
                 self.kill(n, "old age")

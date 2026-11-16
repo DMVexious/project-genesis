@@ -35,6 +35,7 @@ const LOOK = {
   fruit: { tex: () => "tree_apple", spent: () => "tree_apple_bare", sway: 2, sizes: true },
   cactus: { tex: () => "cactus", spent: () => "cactus_bare", sway: 3 },
   mushroom: { tex: () => "mushroom", spent: () => "mushroom_bare", sway: 2 },
+  herb: { tex: () => "herb", spent: () => "herb_bare", sway: 3 },
   // windows: [x, y, w, h] in the picture, lit after dark; chimney: [x, y] where smoke rises
   hut: { tex: (_ground, h) => `hut${(h >>> 3) % 4}`, light: 1.6, windows: [[7, 21, 4, 4], [20, 22, 3, 3]], chimney: [15, 3] },
   farm: { tex: () => "farm", spent: () => "farm_growing", flat: true },
