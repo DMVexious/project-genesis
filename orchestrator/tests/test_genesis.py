@@ -1263,6 +1263,22 @@ class PlayerTests(unittest.TestCase):
         self.run_until(sim, lambda f: n.x != x0, 30)
         self.assertEqual(n.x, x0 + dx)
 
+    def test_walking_to_a_rock_mines_it(self):
+        # (first person's E walks to what you look at: whatever is there gets used, not only trees)
+        sim = self.make()
+        me = sim.alive()[0]["id"]
+        sim.possess(me)
+        asyncio.run(sim.tick())
+        w = sim.engine.world
+        n = w.npc(me)
+        rocks = [o for o in w.objs.values() if o.kind == "rock" and o.ripe]
+        if not rocks:
+            self.skipTest("no rock on this map")
+        rock = min(rocks, key=lambda o: abs(o.x - n.x) + abs(o.y - n.y))
+        self.assertTrue(sim.command({"kind": "walk", "x": rock.x, "y": rock.y}))
+        frames = self.run_until(sim, lambda f: any(e["type"] == "mine" and e["npc"] == me for e in f["fx"]), 600)
+        self.assertTrue(any(e["type"] == "mine" and e["npc"] == me for e in frames[-1]["fx"]))
+
     def test_talking_and_hitting_as_someone_else(self):
         sim = self.make(population=2)
         me, them = (n["id"] for n in sim.alive())

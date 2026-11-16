@@ -24,6 +24,7 @@ from .engine.path import scan
 from .engine.defs import (ACTIONS, ANIMALS, ATTRS, BUILDINGS, ELDER_AGE, EVENT_EMOJI, FX_EVENTS, GESTATION, INTERACTIONS,
                           ITEMS, MATURE_AGE, OBJECTS, SKILLS, TERRAIN, action_ticks, attr_of, building_glyphs,
                           items_text, option_text, same_action, speed_factor, years)
+from .engine.defs import WATER
 from .events import Director
 from . import powers
 from .memory import Memory
@@ -93,6 +94,10 @@ class SimConfig:
     llm_choices: int = 10     # the LLM is shown at most this many actions (the most appealing ones)
     map_name: str = GAME_MAP  # world preset (engine.MAPS)
     god_mode: str = "sandbox" # "sandbox" (powers are free) or "deity" (they cost faith): see powers.py
+
+
+# what a player's walk to a tile ends in, if that tile offers it
+USE_ON_ARRIVAL = frozenset({"chop", "forage", "mine", "construct", "fish", "douse", "collect"})
 
 
 class Simulation:
@@ -647,17 +652,22 @@ class Simulation:
             if not w.inb(x, y):
                 self.order = None
                 return
-            # a walkable spot: go there; something standing there: go next to it, then use it
-            target = [w.idx(x, y)] if w.passable(x, y) else self._cells_around(x, y, 1)
+            # a walkable spot: go there; something standing there: go right beside it (not
+            # diagonally: things are only used from beside them), then use it
+            target = [w.idx(x, y)] if w.passable(x, y) else                 [w.idx(x + dx, y + dy) for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)) if w.passable(x + dx, y + dy)]
             got = self._walk_toward(v, target, choices, sources)
             if got is None:
                 self.order = None
                 self._note(now, "You can't get there.")
             elif got:
                 self.order = None
+                # whatever is there gets used: a tree chopped, a bush picked, a rock mined, a site
+                # built on, a fire put out; walking up to water casts a line
                 use = next((i for i, a in enumerate(v.actions)
-                            if a.get("x") == x and a.get("y") == y and a["kind"] in ("chop", "forage")), None)
-                if use is not None:  # (a tree: chop it; a bush: pick it)
+                            if a.get("x") == x and a.get("y") == y and a["kind"] in USE_ON_ARRIVAL), None)
+                if use is None and w.terrain[w.idx(x, y)] in WATER:
+                    use = next((i for i, a in enumerate(v.actions) if a["kind"] == "fish"), None)
+                if use is not None:
                     choices[nid], sources[nid] = (use, 0), "player"
         elif kind == "interact":
             target = next((n for n in self.state["npcs"] if n["id"] == order["target"] and n["alive"]), None)
